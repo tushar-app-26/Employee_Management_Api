@@ -1,0 +1,27 @@
+# Local secrets and environment files. Keep the safe template in Git.
+.env
+.env.*
+!.env.example
+
+# Installed dependencies and generated build output.
+node_modules/
+dist/
+var/private-documents/
+uploads/
+
+# Test coverage and build metadata.
+coverage/
+*.tsbuildinfo
+
+# Logs and local package-manager debug files.
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Operating system and editor files.
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

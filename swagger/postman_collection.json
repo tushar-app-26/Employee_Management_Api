@@ -1,0 +1,1703 @@
+{
+  "info": {
+    "_postman_id": "8b6d48d1-9e47-4e91-a672-d2a445e72a92",
+    "name": "Employee Management API",
+    "description": "Manual Postman collection for the implemented API, including private local employee-document uploads. Use development data only. Employee self-service and admin access-management requests require the matching account token. For directory, department writes, and admin operations, run npm run seed:dev-admin locally and paste its login access token into the adminAccessToken variable. Keep admin credentials out of this collection. The employeeId collection variable is automatically captured from Create employee or Get my profile; it is the employee profile ID, distinct from employeeUserId.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "auth": {
+    "type": "bearer",
+    "bearer": [
+      {
+        "key": "token",
+        "value": "{{accessToken}}",
+        "type": "string"
+      }
+    ]
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:3000"
+    },
+    {
+      "key": "accessToken",
+      "value": ""
+    },
+    {
+      "key": "refreshToken",
+      "value": ""
+    },
+    {
+      "key": "testEmail",
+      "value": "postman.test@example.test"
+    },
+    {
+      "key": "testPassword",
+      "value": "ChangeMe123!"
+    },
+    {
+      "key": "departmentId",
+      "value": ""
+    },
+    {
+      "key": "employeeId",
+      "value": ""
+    },
+    {
+      "key": "departmentName",
+      "value": "Postman Test Department"
+    },
+    {
+      "key": "employeeFirstName",
+      "value": "Postman"
+    },
+    {
+      "key": "employeeEmail",
+      "value": "postman.employee@example.test"
+    },
+    {
+      "key": "employeeUserId",
+      "value": ""
+    },
+    {
+      "key": "sessionId",
+      "value": ""
+    },
+    {
+      "key": "newTestPassword",
+      "value": "NewCollectionPass456!"
+    },
+    {
+      "key": "targetUserId",
+      "value": ""
+    },
+    {
+      "key": "adminAccessToken",
+      "value": ""
+    },
+    {
+      "key": "documentId",
+      "value": ""
+    },
+    {
+      "key": "downloadUrl",
+      "value": ""
+    },
+    {
+      "key": "documentFile",
+      "value": ""
+    },
+    {
+      "key": "downloadToken",
+      "value": ""
+    }
+  ],
+  "item": [
+    {
+      "name": "Health",
+      "item": [
+        {
+          "name": "Health check",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/health",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "health"
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP status is 200', function () { pm.response.to.have.status(200); });",
+                  "pm.test('Standard response envelope is valid', function () { const j=pm.response.json(); pm.expect(j.statusCode).to.eql(200); pm.expect(j.success).to.eql(true); pm.expect(j.message).to.be.a('string'); pm.expect(j.timestamp).to.be.a('string'); pm.expect(j.requestId).to.be.a('string'); });"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Auth",
+      "item": [
+        {
+          "name": "Register",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/auth/register",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "register"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"firstName\":\"Postman\",\"lastName\":\"Test\",\"email\":\"{{testEmail}}\",\"password\":\"{{testPassword}}\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "auth": {
+              "type": "noauth"
+            },
+            "description": "Creates a named employee-role account. Role is assigned by the API. Use a new email each run."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('testEmail', 'postman+' + Date.now() + '@example.test');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP status is 201', function () { pm.response.to.have.status(201); });",
+                  "pm.test('Standard response envelope is valid', function () { const j=pm.response.json(); pm.expect(j.statusCode).to.eql(201); pm.expect(j.success).to.eql(true); pm.expect(j.message).to.be.a('string'); pm.expect(j.timestamp).to.be.a('string'); pm.expect(j.requestId).to.be.a('string'); });",
+                  "const d=pm.response.json().data; pm.expect(d.firstName).to.eql('Postman'); pm.expect(d.lastName).to.eql('Test'); pm.expect(d.role).to.eql('employee'); pm.collectionVariables.set('employeeUserId', d.id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Login",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/auth/login",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "login"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"email\":\"{{testEmail}}\",\"password\":\"{{testPassword}}\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP status is 200', function () { pm.response.to.have.status(200); });",
+                  "pm.test('Standard response envelope is valid', function () { const j=pm.response.json(); pm.expect(j.statusCode).to.eql(200); pm.expect(j.success).to.eql(true); pm.expect(j.message).to.be.a('string'); pm.expect(j.timestamp).to.be.a('string'); pm.expect(j.requestId).to.be.a('string'); });",
+                  "const d = pm.response.json().data; pm.collectionVariables.set('accessToken', d.accessToken); pm.collectionVariables.set('refreshToken', d.refreshToken);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Refresh",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/auth/refresh",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "refresh"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"refreshToken\":\"{{refreshToken}}\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP status is 200', function () { pm.response.to.have.status(200); });",
+                  "pm.test('Standard response envelope is valid', function () { const j=pm.response.json(); pm.expect(j.statusCode).to.eql(200); pm.expect(j.success).to.eql(true); pm.expect(j.message).to.be.a('string'); pm.expect(j.timestamp).to.be.a('string'); pm.expect(j.requestId).to.be.a('string'); });",
+                  "const d = pm.response.json().data; pm.collectionVariables.set('accessToken', d.accessToken); pm.collectionVariables.set('refreshToken', d.refreshToken);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Logout",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/auth/logout",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "logout"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"refreshToken\":\"{{refreshToken}}\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP status is 200', function () { pm.response.to.have.status(200); });",
+                  "pm.test('Standard response envelope is valid', function () { const j=pm.response.json(); pm.expect(j.statusCode).to.eql(200); pm.expect(j.success).to.eql(true); pm.expect(j.message).to.be.a('string'); pm.expect(j.timestamp).to.be.a('string'); pm.expect(j.requestId).to.be.a('string'); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Login validation failure",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/auth/login",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "login"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"email\":\"invalid\",\"password\":\"\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP status is 400', function () { pm.response.to.have.status(400); });",
+                  "pm.test('Standard response envelope is valid', function () { const j=pm.response.json(); pm.expect(j.statusCode).to.eql(400); pm.expect(j.success).to.eql(false); pm.expect(j.message).to.be.a('string'); pm.expect(j.timestamp).to.be.a('string'); pm.expect(j.requestId).to.be.a('string'); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "List active sessions",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/auth/sessions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "sessions"
+              ]
+            },
+            "description": "Requires the logged-in user access token."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP status is 200', function () { pm.response.to.have.status(200); });",
+                  "const j=pm.response.json(); pm.test('Session list is safe and structured', function () { pm.expect(j.data).to.be.an('array'); j.data.forEach(s => { pm.expect(s).to.include.all.keys('id','createdAt','expiresAt'); pm.expect(s).not.to.have.property('tokenHash'); }); });",
+                  "const sessions=pm.response.json().data; if (sessions.length) pm.collectionVariables.set('sessionId', sessions[0].id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Get one active session by ID",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/auth/sessions/{{sessionId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "sessions",
+                "{{sessionId}}"
+              ]
+            },
+            "description": "Fetches only the active session belonging to the authenticated user. Run List active sessions first."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP status is 200', function () { pm.response.to.have.status(200); });",
+                  "pm.test('Session details are safe and structured', function () { const j=pm.response.json(); pm.expect(j.data).to.include.all.keys('id','createdAt','expiresAt'); pm.expect(j.data.id).to.eql(pm.collectionVariables.get('sessionId')); pm.expect(j.data).not.to.have.property('tokenHash'); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Revoke one session",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/auth/sessions/{{sessionId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "sessions",
+                "{{sessionId}}"
+              ]
+            },
+            "description": "Revokes only the session belonging to the authenticated user. Run List active sessions first."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP status is 200', function () { pm.response.to.have.status(200); });",
+                  "pm.test('Revocation response is valid', function () { const j=pm.response.json(); pm.expect(j.data.revoked).to.eql(true); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Logout all sessions",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/auth/logout-all",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "logout-all"
+              ]
+            },
+            "description": "Revokes every refresh session for the authenticated user. Access token remains valid until its short expiry."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP status is 200', function () { pm.response.to.have.status(200); });",
+                  "pm.test('Revoked session count is returned', function () { const j=pm.response.json(); pm.expect(j.data.revokedSessions).to.be.a('number'); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Change password",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/auth/change-password",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "change-password"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"currentPassword\":\"{{testPassword}}\",\"newPassword\":\"{{newTestPassword}}\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "Changes the registered test account password and revokes all its refresh sessions. Use only a test account."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP status is 200', function () { pm.response.to.have.status(200); });",
+                  "pm.test('Password change and session revocation confirmed', function () { const j=pm.response.json(); pm.expect(j.data.passwordChanged).to.eql(true); pm.expect(j.data.sessionsRevoked).to.eql(true); });",
+                  "pm.collectionVariables.set('testPassword', pm.collectionVariables.get('newTestPassword'));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Employees - read and security",
+      "item": [
+        {
+          "name": "List employees with filters and pagination",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/employees?page=1&limit=20&search=&departmentId={{departmentId}}&employmentStatus=active&sortBy=lastName&sortOrder=asc",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "employees"
+              ],
+              "query": [
+                {
+                  "key": "page",
+                  "value": "1",
+                  "disabled": false
+                },
+                {
+                  "key": "limit",
+                  "value": "20",
+                  "disabled": false
+                },
+                {
+                  "key": "search",
+                  "value": "",
+                  "disabled": false
+                },
+                {
+                  "key": "departmentId",
+                  "value": "{{departmentId}}",
+                  "disabled": false
+                },
+                {
+                  "key": "employmentStatus",
+                  "value": "active",
+                  "disabled": false
+                },
+                {
+                  "key": "sortBy",
+                  "value": "lastName",
+                  "disabled": false
+                },
+                {
+                  "key": "sortOrder",
+                  "value": "asc",
+                  "disabled": false
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP status is 200', function () { pm.response.to.have.status(200); });",
+                  "pm.test('Pagination/list structure is valid', function () { const j=pm.response.json(); pm.expect(j.data.items).to.be.an('array'); pm.expect(j.data.pagination).to.include.all.keys('page','limit','total','totalPages'); pm.expect(j.data.pagination.limit).to.be.at.most(100); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Get employee by ID",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/employees/{{employeeId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "employees",
+                "{{employeeId}}"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP status is 200', function () { pm.response.to.have.status(200); });",
+                  "pm.test('Standard response envelope is valid', function () { const j=pm.response.json(); pm.expect(j.statusCode).to.eql(200); pm.expect(j.success).to.eql(true); pm.expect(j.message).to.be.a('string'); pm.expect(j.timestamp).to.be.a('string'); pm.expect(j.requestId).to.be.a('string'); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Invalid list query",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/employees?page=0&limit=101&sortBy=nope",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "employees"
+              ],
+              "query": [
+                {
+                  "key": "page",
+                  "value": "0",
+                  "disabled": false
+                },
+                {
+                  "key": "limit",
+                  "value": "101",
+                  "disabled": false
+                },
+                {
+                  "key": "sortBy",
+                  "value": "nope",
+                  "disabled": false
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP status is 400', function () { pm.response.to.have.status(400); });",
+                  "pm.test('Standard response envelope is valid', function () { const j=pm.response.json(); pm.expect(j.statusCode).to.eql(400); pm.expect(j.success).to.eql(false); pm.expect(j.message).to.be.a('string'); pm.expect(j.timestamp).to.be.a('string'); pm.expect(j.requestId).to.be.a('string'); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Missing token",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/employees",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "employees"
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP status is 401', function () { pm.response.to.have.status(401); });",
+                  "pm.test('Standard response envelope is valid', function () { const j=pm.response.json(); pm.expect(j.statusCode).to.eql(401); pm.expect(j.success).to.eql(false); pm.expect(j.message).to.be.a('string'); pm.expect(j.timestamp).to.be.a('string'); pm.expect(j.requestId).to.be.a('string'); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Forbidden create with employee role",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/employees",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "employees"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"userId\":\"00000000-0000-4000-8000-000000000000\",\"workEmail\":\"forbidden@example.test\",\"departmentId\":\"{{departmentId}}\",\"jobTitle\":\"Tester\",\"joiningDate\":\"2025-01-01\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "Use an employee-role access token. Request must fail authorization and create nothing.",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{accessToken}}",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP status is 403', function () { pm.response.to.have.status(403); });",
+                  "pm.test('Standard response envelope is valid', function () { const j=pm.response.json(); pm.expect(j.statusCode).to.eql(403); pm.expect(j.success).to.eql(false); pm.expect(j.message).to.be.a('string'); pm.expect(j.timestamp).to.be.a('string'); pm.expect(j.requestId).to.be.a('string'); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Invalid access token",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/employees",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "employees"
+              ]
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "invalid-token",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP status is 401', function () { pm.response.to.have.status(401); });",
+                  "pm.test('Standard error envelope is valid', function () { const j=pm.response.json(); pm.expect(j.statusCode).to.eql(401); pm.expect(j.success).to.eql(false); pm.expect(j.message).to.be.a('string'); pm.expect(j.requestId).to.be.a('string'); });"
+                ]
+              }
+            }
+          ]
+        }
+      ],
+      "auth": {
+        "type": "bearer",
+        "bearer": [
+          {
+            "key": "token",
+            "value": "{{adminAccessToken}}",
+            "type": "string"
+          }
+        ]
+      }
+    },
+    {
+      "name": "Employees - HR/admin writes",
+      "item": [
+        {
+          "name": "List unlinked employee accounts",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/users/unlinked-employees",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "users",
+                "unlinked-employees"
+              ]
+            },
+            "description": "Requires HR/admin access token. Automatically stores the account ID matching testEmail for the Create employee request."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP status is 200', function () { pm.response.to.have.status(200); });",
+                  "const j=pm.response.json(); pm.test('data is an array and contains no password fields', function () { pm.expect(j.data).to.be.an('array'); j.data.forEach(u => { pm.expect(u).not.to.have.property('password'); pm.expect(u).not.to.have.property('passwordHash'); }); });",
+                  "const match=j.data.find(u => u.email === pm.collectionVariables.get('testEmail')); pm.test('Registered test account is available to HR', function () { pm.expect(match, 'register the test account first and use an HR token').to.exist; }); if (match) pm.collectionVariables.set('employeeUserId', match.id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Create employee",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/employees",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "employees"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"userId\":\"{{employeeUserId}}\",\"workEmail\":\"{{testEmail}}\",\"departmentId\":\"{{departmentId}}\",\"jobTitle\":\"QA Engineer\",\"joiningDate\":\"2025-01-15\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "Requires HR/admin token, registered employeeUserId, and departmentId. Names are copied from the linked user into employees; older accounts without names require firstName and lastName."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP status is 201', function () { pm.response.to.have.status(201); });",
+                  "pm.test('Standard response envelope is valid', function () { const j=pm.response.json(); pm.expect(j.statusCode).to.eql(201); pm.expect(j.success).to.eql(true); pm.expect(j.message).to.be.a('string'); pm.expect(j.timestamp).to.be.a('string'); pm.expect(j.requestId).to.be.a('string'); });",
+                  "const j=pm.response.json(); if (j.success && j.data?.id) pm.collectionVariables.set('employeeId', j.data.id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Update employee",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/employees/{{employeeId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "employees",
+                "{{employeeId}}"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"jobTitle\":\"Senior QA Engineer\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP status is 200', function () { pm.response.to.have.status(200); });",
+                  "pm.test('Standard response envelope is valid', function () { const j=pm.response.json(); pm.expect(j.statusCode).to.eql(200); pm.expect(j.success).to.eql(true); pm.expect(j.message).to.be.a('string'); pm.expect(j.timestamp).to.be.a('string'); pm.expect(j.requestId).to.be.a('string'); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Deactivate employee",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/employees/{{employeeId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "employees",
+                "{{employeeId}}"
+              ]
+            },
+            "description": "Requires admin token; soft-deactivates the employee by setting employmentStatus to inactive. The database row is retained."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP status is 200', function () { pm.response.to.have.status(200); });",
+                  "pm.test('Standard response envelope is valid', function () { const j=pm.response.json(); pm.expect(j.statusCode).to.eql(200); pm.expect(j.success).to.eql(true); pm.expect(j.message).to.be.a('string'); pm.expect(j.timestamp).to.be.a('string'); pm.expect(j.requestId).to.be.a('string'); });"
+                ]
+              }
+            }
+          ]
+        }
+      ],
+      "auth": {
+        "type": "bearer",
+        "bearer": [
+          {
+            "key": "token",
+            "value": "{{adminAccessToken}}",
+            "type": "string"
+          }
+        ]
+      }
+    },
+    {
+      "name": "Departments - authenticated CRUD",
+      "item": [
+        {
+          "name": "List departments",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/departments?page=1&limit=20&sortBy=name&sortOrder=asc",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "departments"
+              ],
+              "query": [
+                {
+                  "key": "page",
+                  "value": "1",
+                  "disabled": false
+                },
+                {
+                  "key": "limit",
+                  "value": "20",
+                  "disabled": false
+                },
+                {
+                  "key": "sortBy",
+                  "value": "name",
+                  "disabled": false
+                },
+                {
+                  "key": "sortOrder",
+                  "value": "asc",
+                  "disabled": false
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP status is 200', function () { pm.response.to.have.status(200); });",
+                  "pm.test('Pagination/list structure is valid', function () { const j=pm.response.json(); pm.expect(j.data.items).to.be.an('array'); pm.expect(j.data.pagination).to.include.all.keys('page','limit','total','totalPages'); pm.expect(j.data.pagination.limit).to.be.at.most(100); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Get department",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/departments/{{departmentId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "departments",
+                "{{departmentId}}"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP status is 200', function () { pm.response.to.have.status(200); });",
+                  "pm.test('Standard response envelope is valid', function () { const j=pm.response.json(); pm.expect(j.statusCode).to.eql(200); pm.expect(j.success).to.eql(true); pm.expect(j.message).to.be.a('string'); pm.expect(j.timestamp).to.be.a('string'); pm.expect(j.requestId).to.be.a('string'); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Create department",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/departments",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "departments"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\":\"{{departmentName}}\",\"description\":\"Postman test\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "Creates a department. Use a unique name."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP status is 201', function () { pm.response.to.have.status(201); });",
+                  "pm.test('Standard response envelope is valid', function () { const j=pm.response.json(); pm.expect(j.statusCode).to.eql(201); pm.expect(j.success).to.eql(true); pm.expect(j.message).to.be.a('string'); pm.expect(j.timestamp).to.be.a('string'); pm.expect(j.requestId).to.be.a('string'); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Update department",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/departments/{{departmentId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "departments",
+                "{{departmentId}}"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"description\":\"Updated by collection\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP status is 200', function () { pm.response.to.have.status(200); });",
+                  "pm.test('Standard response envelope is valid', function () { const j=pm.response.json(); pm.expect(j.statusCode).to.eql(200); pm.expect(j.success).to.eql(true); pm.expect(j.message).to.be.a('string'); pm.expect(j.timestamp).to.be.a('string'); pm.expect(j.requestId).to.be.a('string'); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Delete department",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/departments/{{departmentId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "departments",
+                "{{departmentId}}"
+              ]
+            },
+            "description": "Deletes the selected department. Only use a test department."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP status is 200', function () { pm.response.to.have.status(200); });",
+                  "pm.test('Standard response envelope is valid', function () { const j=pm.response.json(); pm.expect(j.statusCode).to.eql(200); pm.expect(j.success).to.eql(true); pm.expect(j.message).to.be.a('string'); pm.expect(j.timestamp).to.be.a('string'); pm.expect(j.requestId).to.be.a('string'); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Invalid list query",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/departments?page=0&limit=101&sortBy=nope",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "departments"
+              ],
+              "query": [
+                {
+                  "key": "page",
+                  "value": "0",
+                  "disabled": false
+                },
+                {
+                  "key": "limit",
+                  "value": "101",
+                  "disabled": false
+                },
+                {
+                  "key": "sortBy",
+                  "value": "nope",
+                  "disabled": false
+                }
+              ]
+            },
+            "description": "Validation failure."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP status is 400', function () { pm.response.to.have.status(400); });",
+                  "pm.test('Standard response envelope is valid', function () { const j=pm.response.json(); pm.expect(j.statusCode).to.eql(400); pm.expect(j.success).to.eql(false); pm.expect(j.message).to.be.a('string'); pm.expect(j.timestamp).to.be.a('string'); pm.expect(j.requestId).to.be.a('string'); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Create validation failure",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/departments",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "departments"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\":\"\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP status is 400', function () { pm.response.to.have.status(400); });",
+                  "pm.test('Standard response envelope is valid', function () { const j=pm.response.json(); pm.expect(j.statusCode).to.eql(400); pm.expect(j.success).to.eql(false); pm.expect(j.message).to.be.a('string'); pm.expect(j.timestamp).to.be.a('string'); pm.expect(j.requestId).to.be.a('string'); });"
+                ]
+              }
+            }
+          ]
+        }
+      ],
+      "auth": {
+        "type": "bearer",
+        "bearer": [
+          {
+            "key": "token",
+            "value": "{{adminAccessToken}}",
+            "type": "string"
+          }
+        ]
+      }
+    },
+    {
+      "name": "My profile - self service",
+      "item": [
+        {
+          "name": "Get my linked employee profile",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/employees/me",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "employees",
+                "me"
+              ]
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const j=pm.response.json(); if (j.success && j.data?.id) pm.collectionVariables.set('employeeId', j.data.id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Update my permitted profile fields",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/employees/me",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "employees",
+                "me"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"firstName\": \"Updated\",\n  \"phone\": \"+15550001111\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Export my account and employee data",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/employees/me/export",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "employees",
+                "me",
+                "export"
+              ]
+            }
+          },
+          "response": []
+        }
+      ],
+      "auth": {
+        "type": "bearer",
+        "bearer": [
+          {
+            "key": "token",
+            "value": "{{accessToken}}",
+            "type": "string"
+          }
+        ]
+      }
+    },
+    {
+      "name": "Admin - account access",
+      "item": [
+        {
+          "name": "Change account role",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/users/{{targetUserId}}/access",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "users",
+                "{{targetUserId}}",
+                "access"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"role\": \"hr\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Deactivate account and revoke refresh sessions",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/users/{{targetUserId}}/access",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "users",
+                "{{targetUserId}}",
+                "access"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"isActive\": false\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Revoke all sessions for account",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/users/{{targetUserId}}/sessions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "users",
+                "{{targetUserId}}",
+                "sessions"
+              ]
+            }
+          },
+          "response": []
+        }
+      ],
+      "auth": {
+        "type": "bearer",
+        "bearer": [
+          {
+            "key": "token",
+            "value": "{{adminAccessToken}}",
+            "type": "string"
+          }
+        ]
+      }
+    },
+    {
+      "name": "Employee Documents - local private storage",
+      "item": [
+        {
+          "name": "Upload employee document",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/employees/{{employeeId}}/documents",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "employees",
+                "%7B%7BemployeeId%7D%7D",
+                "documents"
+              ]
+            },
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "document",
+                  "type": "file",
+                  "src": "{{documentFile}}"
+                }
+              ]
+            },
+            "event": [
+              {
+                "listen": "test",
+                "script": {
+                  "type": "text/javascript",
+                  "exec": [
+                    "const j=pm.response.json(); if (j.success && j.data?.id) pm.collectionVariables.set('documentId', j.data.id);"
+                  ]
+                }
+              }
+            ]
+          }
+        },
+        {
+          "name": "List employee documents",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/employees/{{employeeId}}/documents",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "employees",
+                "%7B%7BemployeeId%7D%7D",
+                "documents"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Create short-lived download URL",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/documents/{{documentId}}/download-url",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "documents",
+                "%7B%7BdocumentId%7D%7D",
+                "download-url"
+              ]
+            },
+            "event": [
+              {
+                "listen": "test",
+                "script": {
+                  "type": "text/javascript",
+                  "exec": [
+                    "const j=pm.response.json(); if (j.success && j.data?.downloadUrl) { const u=new URL(pm.collectionVariables.get('baseUrl') + j.data.downloadUrl); pm.collectionVariables.set('downloadToken', u.searchParams.get('token')); }"
+                  ]
+                }
+              }
+            ]
+          }
+        },
+        {
+          "name": "Download using short-lived URL",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/documents/{{documentId}}/download?token={{downloadToken}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "documents",
+                "{{documentId}}",
+                "download"
+              ],
+              "query": [
+                {
+                  "key": "token",
+                  "value": "{{downloadToken}}"
+                }
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          }
+        },
+        {
+          "name": "Delete document (admin/HR)",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/documents/{{documentId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "documents",
+                "%7B%7BdocumentId%7D%7D"
+              ]
+            }
+          }
+        }
+      ]
+    }
+  ]
+}
