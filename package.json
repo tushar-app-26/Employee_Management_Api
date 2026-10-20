@@ -16,8 +16,7 @@
     "seed:dev-admin": "tsx src/scripts/create-dev-admin-user.ts",
     "seed:dev-departments": "tsx src/scripts/seed-development-departments.ts",
     "audit:prune": "tsx src/scripts/prune-audit-logs.ts",
-    "retention:report": "tsx src/scripts/report-retention-candidates.ts",
-    "test": "tsx --test tests/*.test.mjs"
+    "retention:report": "tsx src/scripts/report-retention-candidates.ts"
   },
   "keywords": [],
   "author": "",
