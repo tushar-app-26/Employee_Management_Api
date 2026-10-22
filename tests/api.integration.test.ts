@@ -16,8 +16,10 @@ import { DepartmentEntity } from "../src/entities/department.entity.js";
 import { EmployeeDocumentEntity } from "../src/entities/employee-document.entity.js";
 import { EmployeeEntity } from "../src/entities/employee.entity.js";
 import { UserEntity, type UserRole } from "../src/entities/user.entity.js";
+import { AppError } from "../src/errors/app-error.js";
 import { errorHandler } from "../src/errors/error-handler.js";
 import { storageDirectory } from "../src/middlewares/document-upload.js";
+import { requestIdMiddleware } from "../src/middlewares/request-id.js";
 
 const password = "CorrectHorseBatteryStaple123!";
 const api = "/api/v1";
@@ -418,12 +420,33 @@ describe("mandatory assignment integration scenarios", () => {
     // 24. The central error handler converts unexpected exceptions into a safe 500 response.
     test("central error handler processes unexpected failures safely", async () => {
         const failingApp = express();
+        failingApp.use(requestIdMiddleware);
         failingApp.get("/explode", (_req, _res, next) => next(new Error("private database detail")));
         failingApp.use(errorHandler);
-        const response = await request(failingApp).get("/explode");
-        expect(response.status).toBe(500);
-        expect(response.body.message).toBe("Internal server error");
-        expect(JSON.stringify(response.body)).not.toContain("private database detail");
+        const logger = vi.spyOn(console, "error").mockImplementation(() => undefined);
+        try {
+            const response = await request(failingApp).get("/explode");
+            expect(response.status).toBe(500);
+            expect(response.body.message).toBe("Internal server error");
+            expect(response.body.code).toBe("INTERNAL_ERROR");
+            expect(JSON.stringify(response.body)).not.toContain("private database detail");
+            expect(logger.mock.calls[0]?.[1]).toMatchObject({
+                requestId: response.headers["x-request-id"],
+                statusCode: 500,
+                error: { name: "Error", message: "private database detail" },
+            });
+            expect((logger.mock.calls[0]?.[1] as { error: { stack?: string } }).error.stack).toContain("Error: private database detail");
+
+            const applicationError = express();
+            applicationError.use(requestIdMiddleware);
+            applicationError.get("/conflict", (_req, _res, next) => next(new AppError(409, "Duplicate employee", "EMPLOYEE_EXISTS")));
+            applicationError.use(errorHandler);
+            const conflict = await request(applicationError).get("/conflict");
+            expect(conflict.status).toBe(409);
+            expect(conflict.body.code).toBe("EMPLOYEE_EXISTS");
+        } finally {
+            logger.mockRestore();
+        }
     });
 
     // 25. A server started with an unreachable PostgreSQL URL exits unsuccessfully instead of serving.
@@ -437,11 +460,44 @@ describe("mandatory assignment integration scenarios", () => {
                 NODE_ENV: "test",
                 DATABASE_URL: "postgresql://postgres:password@127.0.0.1:1/employee_management_test",
                 JWT_SECRET: "test-only-secret-minimum-32-characters-long",
+                DB_CONNECT_TIMEOUT_MS: "200",
+                DB_RETRY_ATTEMPTS: "3",
+                DB_RETRY_BASE_DELAY_MS: "20",
             },
         });
         expect(result.error?.message ?? "").not.toMatch(/timed out/i);
         expect(result.status).not.toBe(0);
+        expect(`${result.stdout}\n${result.stderr}`).toContain("retrying in");
         expect(`${result.stdout}\n${result.stderr}`).not.toContain("test-only-secret-minimum-32-characters-long");
+    });
+
+    test("liveness is independent of readiness, which checks PostgreSQL", async () => {
+        const live = await request(app).get("/health/live");
+        const ready = await request(app).get("/health/ready");
+        expect(live.status).toBe(200);
+        expect(live.body.data.status).toBe("alive");
+        expect(ready.status).toBe(200);
+        expect(ready.body.data.status).toBe("ready");
+
+        const querySpy = vi.spyOn(AppDataSource, "query").mockRejectedValueOnce(new Error("simulated database timeout"));
+        const notReady = await request(app).get("/health/ready");
+        querySpy.mockRestore();
+        expect(notReady.status).toBe(503);
+        expect(notReady.body.code).toBe("DATABASE_UNAVAILABLE");
+        expect(notReady.body.message).toBe("Database is not ready");
+    });
+
+    test("PostgreSQL pool and query timeouts are configured", () => {
+        if (AppDataSource.options.type !== "postgres") throw new Error("Expected PostgreSQL test data source");
+        expect(AppDataSource.options.poolSize).toBe(config.DB_POOL_MAX);
+        expect(AppDataSource.options.connectTimeoutMS).toBe(config.DB_CONNECT_TIMEOUT_MS);
+        expect(AppDataSource.options.extra).toMatchObject({
+            max: config.DB_POOL_MAX,
+            connectionTimeoutMillis: config.DB_CONNECT_TIMEOUT_MS,
+            query_timeout: config.DB_QUERY_TIMEOUT_MS,
+            statement_timeout: config.DB_QUERY_TIMEOUT_MS,
+            idle_in_transaction_session_timeout: config.DB_QUERY_TIMEOUT_MS,
+        });
     });
 
     // Rejected uploads must be removed after Multer has written them to disk.

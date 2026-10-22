@@ -11,6 +11,8 @@ import { config, corsOrigins } from "./config/config.js";
 import { requestIdMiddleware } from "./middlewares/request-id.js";
 import { ApiResponse } from "./utils/api-response.js";
 import { errorHandler } from "./errors/error-handler.js";
+import { AppError } from "./errors/app-error.js";
+import { checkDatabaseReadiness } from "./config/database.js";
 import employeeRoutes from "./routes/employee.routes.js";
 import departmentRoutes from "./routes/department.routes.js";
 import authRoutes from "./routes/auth.routes.js";
@@ -83,14 +85,34 @@ app.use("/api/v1/auth", authRoutes);
 app.use("/api/v1/users", userRoutes);
 app.use("/api/v1/documents", documentRoutes);
 
-// Health endpoint — server testing ke liye.
-app.get("/health", (_req, res) => {
+// Liveness only reports whether the HTTP process is running.
+app.get("/health/live", (_req, res) => {
     return ApiResponse.send(
         res,
         200,
-        "Service is healthy",
-        { status: "ok" }
+        "Service is alive",
+        { status: "alive" },
     );
+});
+
+// Keep the original health URL as a backwards-compatible liveness check.
+app.get("/health", (_req, res) => {
+    return ApiResponse.send(res, 200, "Service is alive", { status: "alive" });
+});
+
+// Readiness confirms the API can reach PostgreSQL before receiving traffic.
+app.get("/health/ready", async (_req, res, next) => {
+    try {
+        await checkDatabaseReadiness();
+        return ApiResponse.send(res, 200, "Service is ready", { status: "ready" });
+    } catch (error) {
+        return next(new AppError(
+            503,
+            "Database is not ready",
+            "DATABASE_UNAVAILABLE",
+            { cause: error },
+        ));
+    }
 });
 
 // Unknown routes ke liye 404 response.

@@ -18,6 +18,12 @@ const configSchema = z.object({
         .string()
         .min(1, "DATABASE_URL is required"),
 
+    DB_POOL_MAX: z.coerce.number().int().min(1).max(100).default(10),
+    DB_CONNECT_TIMEOUT_MS: z.coerce.number().int().min(100).max(30000).default(5000),
+    DB_QUERY_TIMEOUT_MS: z.coerce.number().int().min(100).max(60000).default(5000),
+    DB_RETRY_ATTEMPTS: z.coerce.number().int().min(1).max(5).default(3),
+    DB_RETRY_BASE_DELAY_MS: z.coerce.number().int().min(10).max(5000).default(200),
+
     JWT_SECRET: z
         .string()
         .min(32, "JWT_SECRET must be at least 32 characters"),
