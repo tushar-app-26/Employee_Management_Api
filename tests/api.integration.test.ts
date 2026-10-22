@@ -141,17 +141,54 @@ describe("mandatory assignment integration scenarios", () => {
         expect(failure.body.message).toBe("Invalid email or password");
     });
 
+    test("login performs bcrypt comparison even when the email is unknown", async () => {
+        const compareSpy = vi.spyOn(bcrypt, "compare");
+        try {
+            const response = await request(app).post(`${api}/auth/login`).send({
+                email: `unknown-${randomUUID()}@example.test`,
+                password,
+            });
+            expect(response.status).toBe(401);
+            expect(response.body.message).toBe("Invalid email or password");
+            expect(compareSpy).toHaveBeenCalledTimes(1);
+            expect(compareSpy.mock.calls[0]?.[0]).toBe(password);
+            expect(compareSpy.mock.calls[0]?.[1]).toMatch(/^\$2b\$12\$/);
+        } finally {
+            compareSpy.mockRestore();
+        }
+    });
+
     // 2. Public account responses must not contain hashes or plaintext password fields.
     test("registration and login responses never return password hashes", async () => {
+        const email = `${randomUUID()}@example.test`;
         const registration = await request(app).post(`${api}/auth/register`).send({
-            firstName: "Riya", lastName: "Test", email: `${randomUUID()}@example.test`, password,
+            firstName: "Riya", lastName: "Test", email, password,
         });
-        expect(registration.status).toBe(201);
-        const user = await AppDataSource.getRepository(UserEntity).findOneByOrFail({ id: registration.body.data.id });
+        expect(registration.status).toBe(202);
+        expect(registration.body.data).toBeNull();
+        const user = await AppDataSource.getRepository(UserEntity).findOneByOrFail({ email });
         const signedIn = await request(app).post(`${api}/auth/login`).send({ email: user.email, password });
         const responseText = JSON.stringify([registration.body, signedIn.body]);
         expect(responseText).not.toContain(user.passwordHash);
         expect(responseText).not.toMatch(/passwordHash|password_hash/i);
+    });
+
+    test("registration returns the same response for new and existing email addresses", async () => {
+        const email = `${randomUUID()}@example.test`;
+        const body = { firstName: "Riya", lastName: "Test", email, password };
+        const first = await request(app).post(`${api}/auth/register`).send(body);
+        const duplicate = await request(app).post(`${api}/auth/register`).send(body);
+
+        expect(first.status).toBe(202);
+        expect(duplicate.status).toBe(first.status);
+        expect(duplicate.body).toMatchObject({
+            statusCode: first.body.statusCode,
+            success: first.body.success,
+            message: first.body.message,
+            data: first.body.data,
+        });
+        expect(first.body.message).toBe("Registration request accepted");
+        expect(await AppDataSource.getRepository(UserEntity).countBy({ email })).toBe(1);
     });
 
     // 3. Authentication rejects expired JWTs and signatures made with another key.

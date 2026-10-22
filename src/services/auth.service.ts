@@ -20,6 +20,17 @@ const accessTtlFactors: Record<string, number> = { s: 1, m: 60, h: 3600, d: 8640
 const accessTtl = /^([1-9]\d*)([smhd])$/.exec(config.JWT_ACCESS_TTL)!;
 const ACCESS_TOKEN_SECONDS = Number(accessTtl[1]) * accessTtlFactors[accessTtl[2]!];
 const REFRESH_TOKEN_DAYS = config.REFRESH_TOKEN_TTL_DAYS;
+// Fixed cost-12 bcrypt hash used so missing accounts still incur a password
+// comparison. Its source password is not used for authentication.
+const DUMMY_PASSWORD_HASH = "$2b$12$BRbbyWq4p7LMOIzb1QZSaukwQf3HelVXOZRmAKMTheM36m2BjZuz6";
+
+function isUniqueConstraintViolation(error: unknown): boolean {
+    const candidate = error as {
+        code?: unknown;
+        driverError?: { code?: unknown };
+    };
+    return candidate?.code === "23505" || candidate?.driverError?.code === "23505";
+}
 
 export class AuthService {
     private hashToken(token: string): string {
@@ -60,15 +71,14 @@ export class AuthService {
         return token;
     }
 
-    async register(input: RegisterInput) {
+    async register(input: RegisterInput): Promise<void> {
         const email = input.email.toLowerCase();
+        // Perform the same cost-12 bcrypt work for existing and new addresses
+        // before returning the same public response.
+        const passwordHash = await bcrypt.hash(input.password, 12);
         const existingUser = await userRepository.findOneBy({ email });
 
-        if (existingUser) {
-            throw new AppError(409, "Email is already registered");
-        }
-
-        const passwordHash = await bcrypt.hash(input.password, 12);
+        if (existingUser) return;
 
         const user = userRepository.create({
             firstName: input.firstName,
@@ -78,15 +88,13 @@ export class AuthService {
             role: "employee",
         });
 
-        const savedUser = await userRepository.save(user);
-
-        return {
-            id: savedUser.id,
-            firstName: savedUser.firstName,
-            lastName: savedUser.lastName,
-            email: savedUser.email,
-            role: savedUser.role,
-        };
+        try {
+            await userRepository.save(user);
+        } catch (error) {
+            // Handle concurrent registrations that race past the lookup too.
+            // A unique-email conflict has the same externally visible result.
+            if (!isUniqueConstraintViolation(error)) throw error;
+        }
     }
 
     async login(input: LoginInput) {
@@ -98,11 +106,10 @@ export class AuthService {
             .where("user.email = :email", { email })
             .getOne();
 
-        if (
-            !user ||
-            !user.isActive ||
-            !(await bcrypt.compare(input.password, user.passwordHash))
-        ) {
+        const passwordHash = user?.passwordHash ?? DUMMY_PASSWORD_HASH;
+        const passwordMatches = await bcrypt.compare(input.password, passwordHash);
+
+        if (!user || !user.isActive || !passwordMatches) {
             throw new AppError(401, "Invalid email or password");
         }
 

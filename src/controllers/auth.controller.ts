@@ -9,14 +9,11 @@ export class AuthController {
         next: NextFunction,
     ) {
         try {
-            const user = await authService.register(req.body);
+            await authService.register(req.body);
 
-            return ApiResponse.send(
-                res,
-                201,
-                "User registered successfully",
-                user,
-            );
+            // Same status, message, and empty result whether the email was
+            // newly registered or already existed.
+            return ApiResponse.send(res, 202, "Registration request accepted");
         } catch (error) {
             return next(error);
         }
