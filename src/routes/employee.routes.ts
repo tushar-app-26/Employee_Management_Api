@@ -1,5 +1,5 @@
 
-import { Router } from "express";
+import { Router, type RequestHandler } from "express";
 import { employeeController } from "../controllers/employee.controller.js";
 import { validateRequest } from "../middlewares/validate-request.js";
 import { authenticate } from "../middlewares/auth.middleware.js";
@@ -16,6 +16,15 @@ import {
 } from "../validators/employee.validator.js";
 
 const router = Router();
+
+const requireDeactivationPermission = requirePermission("employee:deactivate");
+const requirePermissionForDisablingStatus: RequestHandler = (req, res, next) => {
+    const status = req.body?.employmentStatus;
+    if (status === "inactive" || status === "terminated") {
+        return requireDeactivationPermission(req, res, next);
+    }
+    return next();
+};
 
 // Har employee route ke liye valid JWT required hai.
 router.use(authenticate);
@@ -83,6 +92,7 @@ router.patch(
     requirePermission("employee:update:any", "employee:update:reports"),
     validateRequest(employeeIdSchema, "params"),
     validateRequest(updateEmployeeSchema),
+    requirePermissionForDisablingStatus,
     (req, res, next) => employeeController.update(req, res, next),
 );
 

@@ -20,6 +20,7 @@ import { AppError } from "../src/errors/app-error.js";
 import { errorHandler } from "../src/errors/error-handler.js";
 import { storageDirectory } from "../src/middlewares/document-upload.js";
 import { requestIdMiddleware } from "../src/middlewares/request-id.js";
+import { employeeService } from "../src/services/employee.service.js";
 
 const password = "CorrectHorseBatteryStaple123!";
 const api = "/api/v1";
@@ -424,6 +425,65 @@ describe("mandatory assignment integration scenarios", () => {
         expect(deactivated.status).toBe(200);
         const oldToken = await request(app).get(`${api}/employees/me`).set(asUser(employeeAccount.accessToken));
         expect(oldToken.status).toBe(401);
+    });
+
+    test("HR may edit employee details but cannot disable their account through PATCH", async () => {
+        const department = await createDepartment();
+        const hr = await login(await createUser("hr"));
+        const employeeUser = await createUser();
+        const employee = await createEmployee(department.id, { user: employeeUser });
+        const employeeAccount = await login(employeeUser);
+
+        const ordinaryEdit = await request(app).patch(`${api}/employees/${employee.id}`)
+            .set(asUser(hr.accessToken)).send({ jobTitle: "Senior Analyst" });
+        expect(ordinaryEdit.status).toBe(200);
+
+        const deactivation = await request(app).patch(`${api}/employees/${employee.id}`)
+            .set(asUser(hr.accessToken)).send({ employmentStatus: "terminated" });
+        expect(deactivation.status).toBe(403);
+        expect((await AppDataSource.getRepository(UserEntity).findOneByOrFail({ id: employeeUser.id })).isActive).toBe(true);
+        expect((await request(app).get(`${api}/employees/me`).set(asUser(employeeAccount.accessToken))).status).toBe(200);
+    });
+
+    test("admins with employee:deactivate can disable an employee and revoke its sessions", async () => {
+        const department = await createDepartment();
+        const admin = await adminAccount();
+        const employeeUser = await createUser();
+        const employee = await createEmployee(department.id, { user: employeeUser });
+        const employeeAccount = await login(employeeUser);
+
+        const response = await request(app).patch(`${api}/employees/${employee.id}`)
+            .set(asUser(admin.accessToken)).send({ employmentStatus: "terminated" });
+        expect(response.status).toBe(200);
+        expect(response.body.data.employmentStatus).toBe("terminated");
+        expect((await AppDataSource.getRepository(UserEntity).findOneByOrFail({ id: employeeUser.id })).isActive).toBe(false);
+        expect((await request(app).get(`${api}/employees/me`).set(asUser(employeeAccount.accessToken))).status).toBe(401);
+    });
+
+    test("an admin cannot deactivate their own account by changing their employee status", async () => {
+        const department = await createDepartment();
+        const admin = await login(await createUser("admin"));
+        const profile = await createEmployee(department.id, { user: admin.user });
+
+        const response = await request(app).patch(`${api}/employees/${profile.id}`)
+            .set(asUser(admin.accessToken)).send({ employmentStatus: "inactive" });
+        expect(response.status).toBe(400);
+        expect((await AppDataSource.getRepository(UserEntity).findOneByOrFail({ id: admin.user.id })).isActive).toBe(true);
+        expect((await AppDataSource.getRepository(EmployeeEntity).findOneByOrFail({ id: profile.id })).employmentStatus).toBe("active");
+    });
+
+    test("employee status changes cannot bypass the last-active-admin guard", async () => {
+        const department = await createDepartment();
+        const lastAdmin = await createUser("admin");
+        const profile = await createEmployee(department.id, { user: lastAdmin });
+
+        await expect(employeeService.updateEmployee(
+            profile.id,
+            { employmentStatus: "terminated" },
+            { sub: randomUUID(), role: "admin" },
+        )).rejects.toMatchObject({ statusCode: 400 });
+        expect((await AppDataSource.getRepository(UserEntity).findOneByOrFail({ id: lastAdmin.id })).isActive).toBe(true);
+        expect((await AppDataSource.getRepository(EmployeeEntity).findOneByOrFail({ id: profile.id })).employmentStatus).toBe("active");
     });
 
     // 21. Invalid JSON input returns the standard structured validation response.
