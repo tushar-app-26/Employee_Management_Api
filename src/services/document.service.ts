@@ -58,7 +58,15 @@ function safeOriginalFilename(name: string) {
 export class DocumentService {
     async upload(employeeId: string, file: Express.Multer.File | undefined, actor: AuthPayload, requestId?: string) {
         if (!file) throw new AppError(400, "Attach one file using the 'document' field");
-        const employee = await assertEmployeeAccess(employeeId, actor, true);
+        let employee: EmployeeEntity;
+        try {
+            employee = await assertEmployeeAccess(employeeId, actor, true);
+        } catch (error) {
+            // Multer has already persisted this file before the service checks
+            // employee ownership. Do not leave rejected uploads on disk.
+            await unlink(file.path).catch(() => undefined);
+            throw error;
+        }
         const expectedType = acceptedTypes[`.${file.filename.split(".").pop()?.toLowerCase()}`];
         let contentMatches = false;
         try {

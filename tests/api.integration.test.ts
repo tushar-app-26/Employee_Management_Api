@@ -1,22 +1,27 @@
 import "reflect-metadata";
 import bcrypt from "bcrypt";
+import { mkdir, readdir, unlink } from "node:fs/promises";
 import jwt from "jsonwebtoken";
+import { resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import express from "express";
 import request from "supertest";
-import { afterAll, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
 
 import { app } from "../src/app.js";
 import { config } from "../src/config/config.js";
 import { AppDataSource } from "../src/config/database.js";
 import { DepartmentEntity } from "../src/entities/department.entity.js";
+import { EmployeeDocumentEntity } from "../src/entities/employee-document.entity.js";
 import { EmployeeEntity } from "../src/entities/employee.entity.js";
 import { UserEntity, type UserRole } from "../src/entities/user.entity.js";
 import { errorHandler } from "../src/errors/error-handler.js";
+import { storageDirectory } from "../src/middlewares/document-upload.js";
 
 const password = "CorrectHorseBatteryStaple123!";
 const api = "/api/v1";
+let storageFilesBeforeTest = new Set<string>();
 
 type Account = {
     user: UserEntity;
@@ -106,6 +111,15 @@ beforeEach(async () => {
         TRUNCATE TABLE employee_documents, audit_logs, refresh_tokens,
             employees, users, departments RESTART IDENTITY CASCADE
     `);
+    await mkdir(storageDirectory, { recursive: true });
+    storageFilesBeforeTest = new Set(await readdir(storageDirectory));
+});
+
+afterEach(async () => {
+    const currentFiles = await readdir(storageDirectory).catch(() => []);
+    await Promise.all(currentFiles
+        .filter((filename) => !storageFilesBeforeTest.has(filename))
+        .map((filename) => unlink(resolve(storageDirectory, filename)).catch(() => undefined)));
 });
 
 afterAll(async () => {
@@ -428,5 +442,51 @@ describe("mandatory assignment integration scenarios", () => {
         expect(result.error?.message ?? "").not.toMatch(/timed out/i);
         expect(result.status).not.toBe(0);
         expect(`${result.stdout}\n${result.stderr}`).not.toContain("test-only-secret-minimum-32-characters-long");
+    });
+
+    // Rejected uploads must be removed after Multer has written them to disk.
+    test("unauthorized document uploads leave no file behind", async () => {
+        const department = await createDepartment();
+        const employeeUser = await createUser();
+        const ownProfile = await createEmployee(department.id, { user: employeeUser });
+        const otherProfile = await createEmployee(department.id);
+        const account = await login(employeeUser);
+        const filesBefore = new Set(await readdir(storageDirectory));
+
+        const response = await request(app)
+            .post(`${api}/employees/${otherProfile.id}/documents`)
+            .set(asUser(account.accessToken))
+            .attach("document", Buffer.from("%PDF-1.7\nvalid test PDF"), {
+                filename: "unauthorized.pdf",
+                contentType: "application/pdf",
+            });
+
+        expect(response.status).toBe(404);
+        expect(await readdir(storageDirectory)).toEqual([...filesBefore]);
+        expect(await AppDataSource.getRepository(EmployeeDocumentEntity).count()).toBe(0);
+        expect(ownProfile.id).not.toBe(otherProfile.id);
+    });
+
+    // A permitted upload must retain its file and persist the corresponding database record.
+    test("authorized document uploads retain the file and database record", async () => {
+        const department = await createDepartment();
+        const employeeUser = await createUser();
+        const employee = await createEmployee(department.id, { user: employeeUser });
+        const account = await login(employeeUser);
+        const filesBefore = new Set(await readdir(storageDirectory));
+
+        const response = await request(app)
+            .post(`${api}/employees/${employee.id}/documents`)
+            .set(asUser(account.accessToken))
+            .attach("document", Buffer.from("%PDF-1.7\nvalid test PDF"), {
+                filename: "authorized.pdf",
+                contentType: "application/pdf",
+            });
+
+        expect(response.status).toBe(201);
+        const newFiles = (await readdir(storageDirectory)).filter((filename) => !filesBefore.has(filename));
+        expect(newFiles).toHaveLength(1);
+        expect(response.body.data.originalFilename).toBe("authorized.pdf");
+        expect(await AppDataSource.getRepository(EmployeeDocumentEntity).countBy({ employeeId: employee.id })).toBe(1);
     });
 });

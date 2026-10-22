@@ -7,6 +7,7 @@
 node_modules/
 dist/
 var/private-documents/
+var/test-private-documents/
 uploads/
 
 # Test coverage and build metadata.

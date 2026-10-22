@@ -6,6 +6,7 @@ dotenv.config({ path: ".env.test", override: true });
 // dedicated rate-limit test loads an isolated app instance with a limit of 1.
 process.env.AUTH_RATE_LIMIT_MAX_REQUESTS = "100";
 process.env.RATE_LIMIT_MAX_REQUESTS = "100";
+process.env.DOCUMENT_STORAGE_DIR = "var/test-private-documents";
 
 const databaseUrl = process.env.DATABASE_URL ?? "";
 if (!databaseUrl.includes("employee_management_test")) {
