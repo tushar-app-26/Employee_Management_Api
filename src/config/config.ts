@@ -58,6 +58,13 @@ const configSchema = z.object({
     INACTIVE_EMPLOYEE_REVIEW_DAYS: z.coerce.number().int().positive().default(2555),
     DOCUMENT_STORAGE_DIR: z.string().min(1).default("var/private-documents"),
     DOCUMENT_MAX_SIZE_MB: z.coerce.number().int().positive().max(25).default(5),
+    DOCUMENT_STORAGE_DRIVER: z.enum(["local", "s3"]).default("s3"),
+    AWS_REGION: z.string().min(1).default(""),
+    AWS_S3_BUCKET: z.string().min(1).default(""),
+    AWS_ACCESS_KEY_ID: z.string().optional(),
+    AWS_SECRET_ACCESS_KEY: z.string().optional(),
+    S3_PRESIGNED_URL_TTL_SECONDS: z.coerce.number().int().min(30).max(3600).default(300),
+    S3_REQUEST_TIMEOUT_MS: z.coerce.number().int().min(100).max(30000).default(5000),
 });
 
 const result = configSchema.safeParse(process.env);
@@ -69,6 +76,19 @@ if (!result.success) {
     );
 
     process.exit(1);
+}
+
+if (result.data.DOCUMENT_STORAGE_DRIVER === "s3") {
+    const missing: string[] = [];
+    if (!result.data.AWS_REGION) missing.push("AWS_REGION");
+    if (!result.data.AWS_S3_BUCKET) missing.push("AWS_S3_BUCKET");
+    if (Boolean(result.data.AWS_ACCESS_KEY_ID) !== Boolean(result.data.AWS_SECRET_ACCESS_KEY)) {
+        missing.push("AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY must be set together");
+    }
+    if (missing.length) {
+        console.error("Invalid environment configuration:", missing);
+        process.exit(1);
+    }
 }
 
 export const config = result.data;

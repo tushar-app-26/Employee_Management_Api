@@ -32,6 +32,11 @@ export class DocumentController {
     async download(req: Request, res: Response, next: NextFunction) {
         try {
             const file = await documentService.download(req.params.id as string, req.query.token as string | undefined);
+            if ("redirectUrl" in file) {
+                res.setHeader("Cache-Control", "private, no-store");
+                res.redirect(302, file.redirectUrl);
+                return;
+            }
             res.setHeader("Content-Type", file.mimeType);
             res.setHeader("Cache-Control", "private, no-store");
             res.setHeader("X-Content-Type-Options", "nosniff");

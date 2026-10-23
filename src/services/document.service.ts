@@ -1,4 +1,3 @@
-import { createReadStream } from "node:fs";
 import { rename, unlink } from "node:fs/promises";
 import { basename, resolve } from "node:path";
 import jwt from "jsonwebtoken";
@@ -9,8 +8,9 @@ import { EmployeeEntity } from "../entities/employee.entity.js";
 import { UserEntity } from "../entities/user.entity.js";
 import { AppError } from "../errors/app-error.js";
 import type { AuthPayload } from "../middlewares/auth.middleware.js";
-import { acceptedTypes, storageDirectory } from "../middlewares/document-upload.js";
+import { acceptedTypes, storageDirectory, createStorageFilename } from "../middlewares/document-upload.js";
 import { auditService } from "./audit.service.js";
+import { documentStorage } from "./document-storage.js";
 
 const downloadTokenTtlSeconds = 120;
 
@@ -32,22 +32,12 @@ async function assertEmployeeAccess(employeeId: string, actor: AuthPayload, writ
     throw new AppError(404, "Employee not found");
 }
 
-function verifyContent(path: string, mimeType: string): Promise<boolean> {
-    return new Promise((resolvePromise, reject) => {
-        const stream = createReadStream(path, { start: 0, end: 7 });
-        const chunks: Buffer[] = [];
-        stream.on("data", (chunk: Buffer) => chunks.push(chunk));
-        stream.on("error", reject);
-        stream.on("end", () => {
-            const bytes = Buffer.concat(chunks);
-            const valid = mimeType === "application/pdf"
-                ? bytes.subarray(0, 5).toString("ascii") === "%PDF-"
-                : mimeType === "image/png"
-                    ? bytes.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))
-                    : bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff;
-            resolvePromise(valid);
-        });
-    });
+function verifyContent(bytes: Buffer, mimeType: string): boolean {
+    return mimeType === "application/pdf"
+        ? bytes.subarray(0, 5).toString("ascii") === "%PDF-"
+        : mimeType === "image/png"
+            ? bytes.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))
+            : bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff;
 }
 
 function safeOriginalFilename(name: string) {
@@ -62,22 +52,22 @@ export class DocumentService {
         try {
             employee = await assertEmployeeAccess(employeeId, actor, true);
         } catch (error) {
-            // Multer has already persisted this file before the service checks
-            // employee ownership. Do not leave rejected uploads on disk.
-            await unlink(file.path).catch(() => undefined);
+            // The file is still only in memory at this point; rejected uploads
+            // never reach either local disk or object storage.
             throw error;
         }
-        const expectedType = acceptedTypes[`.${file.filename.split(".").pop()?.toLowerCase()}`];
-        let contentMatches = false;
-        try {
-            contentMatches = Boolean(expectedType && await verifyContent(file.path, expectedType));
-        } catch {
-            await unlink(file.path).catch(() => undefined);
-            throw new AppError(503, "Document storage is temporarily unavailable");
-        }
+        const storageFilename = createStorageFilename(file.originalname);
+        const expectedType = acceptedTypes[`.${storageFilename.split(".").pop()?.toLowerCase()}`];
+        const contentMatches = Boolean(expectedType && verifyContent(file.buffer, expectedType));
         if (!expectedType || expectedType !== file.mimetype || !contentMatches) {
-            await unlink(file.path).catch(() => undefined);
             throw new AppError(400, "The uploaded file content does not match an allowed document type");
+        }
+
+        try {
+            await documentStorage.put(storageFilename, file.buffer, expectedType);
+        } catch (error) {
+            console.error("Document storage upload failed", { storageFilename, error });
+            throw new AppError(503, "Document storage is temporarily unavailable");
         }
 
         try {
@@ -86,7 +76,7 @@ export class DocumentService {
                     employeeId: employee.id,
                     uploadedByUserId: actor.sub,
                     originalFilename: safeOriginalFilename(file.originalname),
-                    storageFilename: file.filename,
+                    storageFilename,
                     mimeType: expectedType,
                     sizeBytes: file.size,
                 });
@@ -103,7 +93,9 @@ export class DocumentService {
             });
             return this.toResponse(record);
         } catch (error) {
-            await unlink(file.path).catch(() => undefined);
+            await documentStorage.delete(storageFilename).catch((cleanupError) => {
+                console.error("Document upload cleanup failed", { storageFilename, error: cleanupError });
+            });
             throw error;
         }
     }
@@ -118,14 +110,22 @@ export class DocumentService {
 
     async createDownloadUrl(documentId: string, actor: AuthPayload) {
         const document = await this.getAuthorizedDocument(documentId, actor);
-        const token = jwt.sign({ purpose: "employee-document-download", documentId, userId: actor.sub }, config.JWT_SECRET, {
-            algorithm: "HS256", expiresIn: downloadTokenTtlSeconds, issuer: "employee-management-api", audience: "employee-document-download",
-        });
+        const presignedUrl = await documentStorage.presignedDownloadUrl(
+            document.storageFilename,
+            safeOriginalFilename(document.originalFilename),
+            document.mimeType,
+        );
         await auditService.record({
             actorUserId: actor.sub,
             action: "employee_document.download_link_created",
             resourceType: "employee_document",
             resourceId: document.id,
+        });
+        if (presignedUrl) {
+            return { downloadUrl: presignedUrl, expiresInSeconds: config.S3_PRESIGNED_URL_TTL_SECONDS };
+        }
+        const token = jwt.sign({ purpose: "employee-document-download", documentId, userId: actor.sub }, config.JWT_SECRET, {
+            algorithm: "HS256", expiresIn: downloadTokenTtlSeconds, issuer: "employee-management-api", audience: "employee-document-download",
         });
         return {
             downloadUrl: `/api/v1/documents/${document.id}/download?token=${encodeURIComponent(token)}`,
@@ -133,7 +133,9 @@ export class DocumentService {
         };
     }
 
-    async download(documentId: string, token: string | undefined) {
+    async download(documentId: string, token: string | undefined): Promise<
+        { redirectUrl: string } | { path: string; filename: string; mimeType: string }
+    > {
         if (!token) throw new AppError(401, "A valid download token is required");
         let decoded: string | jwt.JwtPayload;
         try {
@@ -150,7 +152,13 @@ export class DocumentService {
         if (!user?.isActive) throw new AppError(401, "Download link is invalid or expired");
         const actor = { sub: user.id, role: user.role } as AuthPayload;
         const document = await this.getAuthorizedDocument(documentId, actor);
-        return { path: resolve(storageDirectory, document.storageFilename), filename: document.originalFilename, mimeType: document.mimeType };
+        const presignedUrl = await documentStorage.presignedDownloadUrl(
+            document.storageFilename,
+            safeOriginalFilename(document.originalFilename),
+            document.mimeType,
+        );
+        if (presignedUrl) return { redirectUrl: presignedUrl };
+        return { path: documentStorage.getLocalPath(document.storageFilename), filename: document.originalFilename, mimeType: document.mimeType };
     }
 
     async delete(documentId: string, actor: AuthPayload, requestId?: string) {
@@ -158,6 +166,25 @@ export class DocumentService {
         const repository = AppDataSource.getRepository(EmployeeDocumentEntity);
         const document = await repository.findOneBy({ id: documentId });
         if (!document) return false;
+        if (documentStorage.usesS3) {
+            await AppDataSource.transaction(async (manager) => {
+                await manager.getRepository(EmployeeDocumentEntity).delete({ id: document.id });
+                await auditService.record({
+                    actorUserId: actor.sub,
+                    action: "employee_document.deleted",
+                    resourceType: "employee_document",
+                    resourceId: document.id,
+                    requestId,
+                    details: { employeeId: document.employeeId, mimeType: document.mimeType },
+                }, manager);
+            });
+            try {
+                await documentStorage.delete(document.storageFilename);
+            } catch (error) {
+                console.error("S3 document cleanup failed after metadata deletion", { documentId: document.id, error });
+            }
+            return true;
+        }
         const filePath = resolve(storageDirectory, document.storageFilename);
         const pendingDeletePath = resolve(storageDirectory, `.pending-delete-${document.id}`);
         let stagedForDelete = false;
