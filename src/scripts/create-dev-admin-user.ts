@@ -10,10 +10,10 @@ async function createDevelopmentAdmin(): Promise<void> {
         process.exitCode = 1;
         return;
     }
-    const email = process.env.DEV_ADMIN_EMAIL?.trim().toLowerCase();
-    const password = process.env.DEV_ADMIN_PASSWORD;
-    const firstName = process.env.DEV_ADMIN_FIRST_NAME?.trim();
-    const lastName = process.env.DEV_ADMIN_LAST_NAME?.trim();
+    const email = config.DEV_ADMIN_EMAIL?.trim().toLowerCase();
+    const password = config.DEV_ADMIN_PASSWORD;
+    const firstName = config.DEV_ADMIN_FIRST_NAME?.trim();
+    const lastName = config.DEV_ADMIN_LAST_NAME?.trim();
     if (!email || !email.includes("@") || !firstName || !lastName || !password || password.length < 12 || password.length > 72) {
         console.error("Set DEV_ADMIN_FIRST_NAME, DEV_ADMIN_LAST_NAME, DEV_ADMIN_EMAIL, and a 12-72 character DEV_ADMIN_PASSWORD in the local development environment.");
         process.exitCode = 1;

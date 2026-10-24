@@ -222,6 +222,22 @@ export class EmployeeService {
                 throw new AppError(403, "You cannot update this employee profile");
             }
 
+            const disablesAccount = input.employmentStatus === "inactive" || input.employmentStatus === "terminated";
+            if (disablesAccount && employee.userId) {
+                const linkedUser = await manager.getRepository(UserEntity).findOneBy({ id: employee.userId });
+                if (linkedUser?.role === "admin" && linkedUser.isActive) {
+                    if (linkedUser.id === actor.sub) {
+                        throw new AppError(400, "Administrators cannot deactivate their own account");
+                    }
+                    const activeAdmins: Array<{ id: string }> = await manager.query(
+                        "SELECT id FROM users WHERE role_id = 'admin' AND is_active = TRUE FOR UPDATE",
+                    );
+                    if (activeAdmins.length <= 1) {
+                        throw new AppError(400, "The last active administrator cannot be deactivated or demoted");
+                    }
+                }
+            }
+
             if (input.departmentId !== undefined && !await manager.getRepository(DepartmentEntity).findOneBy({ id: input.departmentId })) {
                 throw new AppError(404, "Department not found");
             }

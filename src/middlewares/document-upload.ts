@@ -1,4 +1,3 @@
-import { mkdir } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { extname, resolve } from "node:path";
 import multer from "multer";
@@ -14,17 +13,7 @@ const acceptedTypes: Record<string, string> = {
 };
 
 export const documentUpload = multer({
-    storage: multer.diskStorage({
-        destination: (_req, _file, callback) => {
-            void mkdir(storageDirectory, { recursive: true })
-                .then(() => callback(null, storageDirectory))
-                .catch(() => callback(new Error("Document storage is unavailable"), storageDirectory));
-        },
-        filename: (_req, file, callback) => {
-            callback(null, `${randomUUID()}${extname(file.originalname).toLowerCase()}`);
-        },
-    }),
-    limits: { fileSize: config.DOCUMENT_MAX_SIZE_MB * 1024 * 1024, files: 1, fields: 5 },
+    storage: multer.memoryStorage(),
     fileFilter: (_req, file, callback) => {
         const extension = extname(file.originalname).toLowerCase();
         if (!acceptedTypes[extension] || acceptedTypes[extension] !== file.mimetype) {
@@ -33,6 +22,11 @@ export const documentUpload = multer({
         }
         callback(null, true);
     },
+    limits: { fileSize: config.DOCUMENT_MAX_SIZE_MB * 1024 * 1024, files: 1, fields: 5 },
 });
+
+export function createStorageFilename(originalName: string) {
+    return `${randomUUID()}${extname(originalName).toLowerCase()}`;
+}
 
 export { acceptedTypes, storageDirectory };

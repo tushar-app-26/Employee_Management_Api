@@ -3,7 +3,7 @@ import type { Request, Response, NextFunction } from "express";
 import jwt from "jsonwebtoken";
 import { config } from "../config/config.js";
 import { ApiResponse } from "../utils/api-response.js";
-import { AppDataSource } from "../config/database.js";
+import { findActiveAccountForSession } from "../repositories/authorization.repository.js";
 
 export interface AuthPayload {
     sub: string;
@@ -42,6 +42,7 @@ export async function authenticate(
     let decoded: string | jwt.JwtPayload;
     try {
         decoded = jwt.verify(token, config.JWT_SECRET, {
+            algorithms: ["HS256"],
             issuer: "employee-management-api",
             audience: "employee-management-client",
         });
@@ -66,26 +67,12 @@ export async function authenticate(
         // Read the current account state and role on each protected request.
         // This immediately invalidates existing access tokens after deactivation
         // or a role change instead of trusting stale JWT role claims.
-        const accounts: Array<{ id: string; role_id: AuthPayload["role"] }> = await AppDataSource.query(
-            `SELECT account.id, account.role_id
-             FROM users AS account
-             WHERE account.id = $1
-               AND account.is_active = TRUE
-               AND EXISTS (
-                   SELECT 1 FROM refresh_tokens AS session
-                   WHERE session.user_id = account.id
-                     AND session.family_id = $2
-                     AND session.revoked_at IS NULL
-                     AND session.expires_at > NOW()
-               )`,
-            [decoded.sub, decoded.sid],
-        );
-        const account = accounts[0];
+        const account = await findActiveAccountForSession(decoded.sub, decoded.sid);
         if (!account) {
             return ApiResponse.send(res, 401, "Account is inactive or unavailable");
         }
 
-        req.auth = { sub: account.id, role: account.role_id };
+        req.auth = { sub: account.id, role: account.role };
         return next();
     } catch (error) {
         return next(error);
