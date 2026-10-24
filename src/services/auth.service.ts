@@ -6,7 +6,8 @@ import { AppDataSource } from "../config/database.js";
 import { config } from "../config/config.js";
 import { AppError } from "../errors/app-error.js";
 import { userRepository } from "../repositories/user.repository.js";
-import { refreshTokenRepository } from "../repositories/refresh-token.repository.js";
+import { listActiveSessions, refreshTokenRepository } from "../repositories/refresh-token.repository.js";
+import type { PaginationQuery } from "../validators/pagination.validator.js";
 import { RefreshTokenEntity } from "../entities/refresh-token.entity.js";
 import { UserEntity } from "../entities/user.entity.js";
 
@@ -243,19 +244,8 @@ export class AuthService {
         return { revokedSessions };
     }
 
-    async getActiveSessions(userId: string) {
-        return refreshTokenRepository.query(
-            `SELECT family_id AS id,
-                    MAX(created_at) AS "createdAt",
-                    MAX(expires_at) AS "expiresAt"
-             FROM refresh_tokens
-             WHERE user_id = $1
-               AND revoked_at IS NULL
-               AND expires_at > NOW()
-             GROUP BY family_id
-             ORDER BY MAX(created_at) DESC`,
-            [userId],
-        );
+    async getActiveSessions(userId: string, pagination: PaginationQuery) {
+        return listActiveSessions(userId, pagination.page, pagination.limit);
     }
 
     async getActiveSession(userId: string, sessionId: string) {

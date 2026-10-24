@@ -13,12 +13,15 @@ import { ApiResponse } from "./utils/api-response.js";
 import { errorHandler } from "./errors/error-handler.js";
 import { AppError } from "./errors/app-error.js";
 import { checkDatabaseReadiness } from "./config/database.js";
+import { createRateLimitStore } from "./config/rate-limit-store.js";
 import employeeRoutes from "./routes/employee.routes.js";
 import departmentRoutes from "./routes/department.routes.js";
 import authRoutes from "./routes/auth.routes.js";
 import userRoutes from "./routes/user.routes.js";
 import documentRoutes from "./routes/document.routes.js";
 const app = express();
+const authRateLimitStore = createRateLimitStore("employee-api:auth:");
+const apiRateLimitStore = createRateLimitStore("employee-api:api:");
 
 // Har request ko unique ID do.
 app.use(requestIdMiddleware);
@@ -48,6 +51,7 @@ app.use(
         limit: config.AUTH_RATE_LIMIT_MAX_REQUESTS,
         standardHeaders: true,
         legacyHeaders: false,
+        ...(authRateLimitStore ? { store: authRateLimitStore } : {}),
         handler: (_req, res) => ApiResponse.send(res, 429, "Too many authentication attempts"),
     }),
 );
@@ -60,6 +64,7 @@ app.use(
         limit: config.RATE_LIMIT_MAX_REQUESTS,
         standardHeaders: true,
         legacyHeaders: false,
+        ...(apiRateLimitStore ? { store: apiRateLimitStore } : {}),
         handler: (_req, res) => {
             return ApiResponse.send(
                 res,

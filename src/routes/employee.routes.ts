@@ -6,6 +6,7 @@ import { authenticate } from "../middlewares/auth.middleware.js";
 import { requirePermission } from "../middlewares/authorize.js";
 import { documentUpload } from "../middlewares/document-upload.js";
 import { documentController } from "../controllers/document.controller.js";
+import { documentListQuerySchema } from "../validators/document.validator.js";
 
 import {
     createEmployeeSchema,
@@ -66,6 +67,7 @@ router.get(
     "/:id/documents",
     requirePermission("document:list"),
     validateRequest(employeeIdSchema, "params"),
+    validateRequest(documentListQuerySchema, "query"),
     (req, res, next) => documentController.list(req, res, next),
 );
 

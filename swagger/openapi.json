@@ -3,7 +3,7 @@
   "info": {
     "title": "Employee Management API",
     "version": "1.0.0",
-    "description": "OpenAPI documentation for implemented endpoints. Employee document uploads use private local disk storage in development. Registration collects firstName, lastName, email, and password; role is always employee. HR/admin can list unlinked accounts at GET /api/v1/users/unlinked-employees and link one using POST /api/v1/employees. Linked employee names are stored in both tables and kept in sync by API updates. Auth session management also supports logout-all, active session listing, per-session revocation, and password change with refresh-session revocation. Protected requests reload current user status and role from PostgreSQL. Refresh tokens are bearer values returned in JSON and supplied in JSON bodies; clients must protect them in platform secure storage."
+    "description": "OpenAPI specification for the Employee Management API. Private employee documents use S3 in configured environments and short-lived presigned download URLs. Integration tests may explicitly use private local storage. Registration always creates employee-role accounts. Protected requests reload current account status and role from PostgreSQL. Paged lists return data.items and data.pagination."
   },
   "servers": [
     {
@@ -82,7 +82,7 @@
           "Auth"
         ],
         "responses": {
-          "201": {
+          "202": {
             "description": "User registered successfully",
             "content": {
               "application/json": {
@@ -1449,9 +1449,21 @@
                       "type": "object",
                       "properties": {
                         "data": {
-                          "type": "array",
-                          "items": {
-                            "$ref": "#/components/schemas/UnlinkedEmployeeUser"
+                          "type": "object",
+                          "required": [
+                            "items",
+                            "pagination"
+                          ],
+                          "properties": {
+                            "items": {
+                              "type": "array",
+                              "items": {
+                                "$ref": "#/components/schemas/UnlinkedEmployeeUser"
+                              }
+                            },
+                            "pagination": {
+                              "$ref": "#/components/schemas/Pagination"
+                            }
                           }
                         }
                       }
@@ -1491,7 +1503,30 @@
               }
             }
           }
-        }
+        },
+        "parameters": [
+          {
+            "name": "page",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "default": 1
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 20
+            }
+          }
+        ]
       }
     },
     "/api/v1/auth/logout-all": {
@@ -1582,9 +1617,21 @@
                       "type": "object",
                       "properties": {
                         "data": {
-                          "type": "array",
-                          "items": {
-                            "$ref": "#/components/schemas/ActiveSession"
+                          "type": "object",
+                          "required": [
+                            "items",
+                            "pagination"
+                          ],
+                          "properties": {
+                            "items": {
+                              "type": "array",
+                              "items": {
+                                "$ref": "#/components/schemas/ActiveSession"
+                              }
+                            },
+                            "pagination": {
+                              "$ref": "#/components/schemas/Pagination"
+                            }
                           }
                         }
                       }
@@ -1614,7 +1661,30 @@
               }
             }
           }
-        }
+        },
+        "parameters": [
+          {
+            "name": "page",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "default": 1
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 20
+            }
+          }
+        ]
       }
     },
     "/api/v1/auth/sessions/{id}": {
@@ -2097,7 +2167,7 @@
             "description": "File exceeds configured limit"
           },
           "503": {
-            "description": "Local document storage unavailable"
+            "description": "Private object storage is unavailable"
           }
         },
         "requestBody": {
@@ -2121,7 +2191,7 @@
         }
       },
       "get": {
-        "summary": "List documents for an employee",
+        "summary": "List paginated documents for an employee",
         "tags": [
           "Documents"
         ],
@@ -2134,32 +2204,78 @@
               "type": "string",
               "format": "uuid"
             }
+          },
+          {
+            "name": "page",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "default": 1
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 20
+            }
           }
         ],
         "responses": {
           "200": {
-            "description": "Request completed"
-          },
-          "201": {
-            "description": "Document uploaded"
+            "description": "Employee document page",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiResponse"
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "data": {
+                          "type": "object",
+                          "required": [
+                            "items",
+                            "pagination"
+                          ],
+                          "properties": {
+                            "items": {
+                              "type": "array",
+                              "items": {
+                                "$ref": "#/components/schemas/EmployeeDocument"
+                              }
+                            },
+                            "pagination": {
+                              "$ref": "#/components/schemas/Pagination"
+                            }
+                          }
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
           },
           "400": {
-            "description": "Invalid request or file"
+            "description": "Invalid page, limit, or employee ID"
           },
           "401": {
-            "description": "Authentication or download token required"
+            "description": "Missing or invalid access token"
           },
           "403": {
             "description": "Permission denied"
           },
           "404": {
-            "description": "Employee or document not found"
-          },
-          "413": {
-            "description": "File exceeds configured limit"
-          },
-          "503": {
-            "description": "Local document storage unavailable"
+            "description": "Employee not found or outside caller scope"
           }
         }
       }
@@ -2183,7 +2299,40 @@
         ],
         "responses": {
           "200": {
-            "description": "Request completed"
+            "description": "Short-lived private document download link",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiResponse"
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "data": {
+                          "type": "object",
+                          "required": [
+                            "downloadUrl",
+                            "expiresInSeconds"
+                          ],
+                          "properties": {
+                            "downloadUrl": {
+                              "type": "string",
+                              "format": "uri",
+                              "description": "Short-lived S3 presigned URL, or private local proxy URL in local mode."
+                            },
+                            "expiresInSeconds": {
+                              "type": "integer"
+                            }
+                          }
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
           },
           "201": {
             "description": "Document uploaded"
@@ -2763,6 +2912,45 @@
           }
         },
         "description": "Contains only safe session metadata; refresh token hashes are never returned."
+      },
+      "EmployeeDocument": {
+        "type": "object",
+        "required": [
+          "id",
+          "employeeId",
+          "originalFilename",
+          "mimeType",
+          "sizeBytes",
+          "createdAt"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "employeeId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "originalFilename": {
+            "type": "string"
+          },
+          "mimeType": {
+            "type": "string",
+            "enum": [
+              "application/pdf",
+              "image/png",
+              "image/jpeg"
+            ]
+          },
+          "sizeBytes": {
+            "type": "integer"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
       }
     }
   }

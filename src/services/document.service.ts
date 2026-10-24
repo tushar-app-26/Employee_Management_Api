@@ -11,6 +11,7 @@ import type { AuthPayload } from "../middlewares/auth.middleware.js";
 import { acceptedTypes, storageDirectory, createStorageFilename } from "../middlewares/document-upload.js";
 import { auditService } from "./audit.service.js";
 import { documentStorage } from "./document-storage.js";
+import type { PaginationQuery } from "../validators/pagination.validator.js";
 
 const downloadTokenTtlSeconds = 120;
 
@@ -67,7 +68,7 @@ export class DocumentService {
             await documentStorage.put(storageFilename, file.buffer, expectedType);
         } catch (error) {
             console.error("Document storage upload failed", { storageFilename, error });
-            throw new AppError(503, "Document storage is temporarily unavailable");
+            throw new AppError(503, "Document storage is temporarily unavailable", "STORAGE_UNAVAILABLE");
         }
 
         try {
@@ -100,15 +101,24 @@ export class DocumentService {
         }
     }
 
-    async list(employeeId: string, actor: AuthPayload) {
+    async list(employeeId: string, actor: AuthPayload, pagination: PaginationQuery) {
         const employee = await assertEmployeeAccess(employeeId, actor, false);
-        const documents = await AppDataSource.getRepository(EmployeeDocumentEntity).find({
+        const [documents, total] = await AppDataSource.getRepository(EmployeeDocumentEntity).findAndCount({
             where: { employeeId: employee.id }, order: { createdAt: "DESC" },
+            skip: (pagination.page - 1) * pagination.limit,
+            take: pagination.limit,
         });
-        return documents.map((document) => this.toResponse(document));
+        return {
+            items: documents.map((document) => this.toResponse(document)),
+            pagination: {
+                ...pagination,
+                total,
+                totalPages: Math.ceil(total / pagination.limit),
+            },
+        };
     }
 
-    async createDownloadUrl(documentId: string, actor: AuthPayload) {
+    async createDownloadUrl(documentId: string, actor: AuthPayload, requestId?: string) {
         const document = await this.getAuthorizedDocument(documentId, actor);
         const presignedUrl = await documentStorage.presignedDownloadUrl(
             document.storageFilename,
@@ -120,6 +130,7 @@ export class DocumentService {
             action: "employee_document.download_link_created",
             resourceType: "employee_document",
             resourceId: document.id,
+            requestId,
         });
         if (presignedUrl) {
             return { downloadUrl: presignedUrl, expiresInSeconds: config.S3_PRESIGNED_URL_TTL_SECONDS };
@@ -192,7 +203,7 @@ export class DocumentService {
             await rename(filePath, pendingDeletePath);
             stagedForDelete = true;
         } catch (error) {
-            if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw new AppError(503, "Document storage is temporarily unavailable");
+            if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw new AppError(503, "Document storage is temporarily unavailable", "STORAGE_UNAVAILABLE");
         }
         try {
             await AppDataSource.transaction(async (manager) => {

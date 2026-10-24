@@ -6,6 +6,8 @@ A versioned REST API for managing employees and departments. It is built with No
 
 - Node.js and npm
 - PostgreSQL
+- A private S3 bucket for the default document-storage configuration
+- Redis for shared production rate limits (optional in local development)
 - A database with the required project schema/migrations applied
 
 ## Setup
@@ -16,7 +18,7 @@ A versioned REST API for managing employees and departments. It is built with No
    npm install
    ```
 
-2. Copy `.env.example` to `.env` and set your local PostgreSQL connection string and a private JWT secret of at least 32 characters. Do not commit `.env` or share its values.
+2. Copy `.env.example` to `.env` and set your PostgreSQL connection string, private JWT secret of at least 32 characters, AWS region and private S3 bucket. Set AWS access keys or use the AWS SDK's workload credentials. Do not commit `.env` or share its values. Set `REDIS_URL` when using Redis locally; production requires it.
 
 3. Create an empty PostgreSQL database. TypeORM schema synchronization and automatic migration execution are disabled (`synchronize: false`, `migrationsRun: false`). Apply the TypeORM migrations:
 
@@ -50,13 +52,25 @@ A versioned REST API for managing employees and departments. It is built with No
 - `npm run retention:report` — count inactive employee records past the review interval; does not delete employee data.
 - `npm run audit:prune` — delete audit records older than `AUDIT_LOG_RETENTION_DAYS`; run only under the approved retention policy.
 
-## Employee documents (local development storage)
+## Architecture and resilience documentation
 
-Documents are stored outside the public web root in `DOCUMENT_STORAGE_DIR` (default `var/private-documents/`). The directory is ignored by Git. This local-disk adapter is for development and testing; it is not shared or durable across multiple application servers. A production deployment should replace it with private object storage.
+- [High-level and low-level design](docs/hld-lld.md) includes the component diagram, module contracts, ERD, and API error types.
+- [LAB 6 resilience and storage recovery](docs/lab6-resilience-and-storage.md) describes timeouts, retry behavior, storage recovery, and operational checks.
 
-The API accepts one PDF, PNG, or JPEG file up to `DOCUMENT_MAX_SIZE_MB` (default 5 MB) in the `document` multipart field. It checks the extension, declared MIME type, and file signature, then creates a server-generated filename. Only metadata is stored in PostgreSQL. To try it, set Postman's `documentFile` variable to a local test file path, upload against an employee ID the caller may access, request a short-lived download URL, and use the collection's download request. HR/admin can delete documents; uploaders and employees can list/download only within their permitted employee scope. Upload, download-link creation, and deletion are audited.
+## Employee documents (private object storage)
+
+Documents use the S3 adapter by default (`DOCUMENT_STORAGE_DRIVER=s3`). Configure `AWS_REGION`, `AWS_S3_BUCKET`, and either `AWS_ACCESS_KEY_ID` plus `AWS_SECRET_ACCESS_KEY` or an AWS workload credential provider. Keep bucket public access blocked. `S3_REQUEST_TIMEOUT_MS` bounds network requests and `S3_PRESIGNED_URL_TTL_SECONDS` controls short-lived downloads. The IAM identity needs only object-level upload, read, and delete permissions for the configured bucket.
+
+
+The API accepts one PDF, PNG, or JPEG file up to `DOCUMENT_MAX_SIZE_MB` (default 5 MB) in the `document` multipart field. It checks the extension, declared MIME type, and file signature, then creates a server-generated object key. Only metadata is stored in PostgreSQL. Set Postman's `documentFile` variable to a local test-file path, upload against an employee ID the caller may access, request a short-lived download URL, and use the collection's download request. HR/admin can delete documents; uploaders and employees can list/download only within their permitted employee scope. Upload, download-link creation, and deletion are audited.
+
+Set `DOCUMENT_STORAGE_DRIVER=local` only for development/test environments that need the private `DOCUMENT_STORAGE_DIR` adapter. It is not shared or durable across multiple application servers. Integration tests explicitly choose local storage and use a dedicated test database.
 
 Apply the new metadata table with `npm run migration:run` before calling document routes. No file is served from a static/public directory.
+
+## Shared rate limits
+
+The API uses Redis-backed stores with separate prefixes for authentication and general API requests when `REDIS_URL` is configured. Production startup requires Redis so replicas share counters. Local development and tests may leave `REDIS_URL` empty and use the default in-process store.
 
 ## API conventions
 

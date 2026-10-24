@@ -1,6 +1,7 @@
 import type { Request, Response, NextFunction } from "express";
 import { authService } from "../services/auth.service.js";
 import { ApiResponse } from "../utils/api-response.js";
+import type { PaginationQuery } from "../validators/pagination.validator.js";
 
 export class AuthController {
     async register(
@@ -95,7 +96,10 @@ export class AuthController {
         next: NextFunction,
     ) {
         try {
-            const result = await authService.getActiveSessions(req.auth!.sub);
+            const result = await authService.getActiveSessions(
+                req.auth!.sub,
+                res.locals.validatedQuery as PaginationQuery,
+            );
             return ApiResponse.send(res, 200, "Active sessions fetched successfully", result);
         } catch (error) {
             return next(error);

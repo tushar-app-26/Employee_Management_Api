@@ -192,8 +192,8 @@ describe("mandatory assignment integration scenarios", () => {
         expect(await AppDataSource.getRepository(UserEntity).countBy({ email })).toBe(1);
     });
 
-    // 3. Authentication rejects expired JWTs and signatures made with another key.
-    test("expired and incorrectly signed JWTs are rejected", async () => {
+    // 3. Authentication rejects expired JWTs, incorrect signatures, and unsigned JWTs.
+    test("expired, incorrectly signed, and unsigned JWTs are rejected", async () => {
         const account = await login(await createUser());
         const decoded = jwt.decode(account.accessToken) as jwt.JwtPayload;
         const claims = { sub: account.user.id, role: account.user.role, sid: decoded.sid };
@@ -203,11 +203,34 @@ describe("mandatory assignment integration scenarios", () => {
         const wrongSignature = jwt.sign(claims, "wrong-secret-with-enough-length-123456", {
             issuer: "employee-management-api", audience: "employee-management-client",
         });
+        const unsigned = `${Buffer.from(JSON.stringify({ alg: "none", typ: "JWT" })).toString("base64url")}.${Buffer.from(JSON.stringify({ ...claims, iss: "employee-management-api", aud: "employee-management-client" })).toString("base64url")}.`;
 
-        for (const token of [expired, wrongSignature]) {
+        for (const token of [expired, wrongSignature, unsigned]) {
             const response = await request(app).get(`${api}/auth/sessions`).set(asUser(token));
             expect(response.status).toBe(401);
         }
+    });
+
+    test("active session listing returns a paginated result", async () => {
+        const user = await createUser();
+        const first = await login(user);
+        await login(user);
+        const response = await request(app).get(`${api}/auth/sessions?page=1&limit=1`).set(asUser(first.accessToken));
+
+        expect(response.status).toBe(200);
+        expect(response.body.data.items).toHaveLength(1);
+        expect(response.body.data.pagination).toMatchObject({ page: 1, limit: 1, total: 2, totalPages: 2 });
+    });
+
+    test("unlinked employee accounts can be paginated", async () => {
+        const admin = await adminAccount();
+        await createUser();
+        await createUser();
+        const response = await request(app).get(`${api}/users/unlinked-employees?page=2&limit=1`).set(asUser(admin.accessToken));
+
+        expect(response.status).toBe(200);
+        expect(response.body.data.items).toHaveLength(1);
+        expect(response.body.data.pagination).toMatchObject({ page: 2, limit: 1, total: 2, totalPages: 2 });
     });
 
     // 4. Refresh rotation stores a replacement and reuse of the prior token invalidates the family.
@@ -641,5 +664,57 @@ describe("mandatory assignment integration scenarios", () => {
         expect(newFiles).toHaveLength(1);
         expect(response.body.data.originalFilename).toBe("authorized.pdf");
         expect(await AppDataSource.getRepository(EmployeeDocumentEntity).countBy({ employeeId: employee.id })).toBe(1);
+    });
+
+    test("employee document listing is paginated", async () => {
+        const department = await createDepartment();
+        const employeeUser = await createUser();
+        const employee = await createEmployee(department.id, { user: employeeUser });
+        const account = await login(employeeUser);
+        const repository = AppDataSource.getRepository(EmployeeDocumentEntity);
+        for (let index = 0; index < 3; index += 1) {
+            await repository.save(repository.create({
+                employeeId: employee.id,
+                uploadedByUserId: employeeUser.id,
+                originalFilename: `document-${index}.pdf`,
+                storageFilename: `${randomUUID()}.pdf`,
+                mimeType: "application/pdf",
+                sizeBytes: 100,
+            }));
+        }
+
+        const response = await request(app)
+            .get(`${api}/employees/${employee.id}/documents?page=2&limit=2`)
+            .set(asUser(account.accessToken));
+        expect(response.status).toBe(200);
+        expect(response.body.data.items).toHaveLength(1);
+        expect(response.body.data.pagination).toMatchObject({ page: 2, limit: 2, total: 3, totalPages: 2 });
+    });
+
+    test("download-link audit records the request ID", async () => {
+        const department = await createDepartment();
+        const employeeUser = await createUser();
+        const employee = await createEmployee(department.id, { user: employeeUser });
+        const account = await login(employeeUser);
+        const document = await AppDataSource.getRepository(EmployeeDocumentEntity).save(
+            AppDataSource.getRepository(EmployeeDocumentEntity).create({
+                employeeId: employee.id,
+                uploadedByUserId: employeeUser.id,
+                originalFilename: "audit-test.pdf",
+                storageFilename: `${randomUUID()}.pdf`,
+                mimeType: "application/pdf",
+                sizeBytes: 100,
+            }),
+        );
+
+        const response = await request(app)
+            .get(`${api}/documents/${document.id}/download-url`)
+            .set(asUser(account.accessToken));
+        expect(response.status).toBe(200);
+        const rows = await AppDataSource.query(
+            "SELECT request_id FROM audit_logs WHERE action = $1 AND resource_id = $2",
+            ["employee_document.download_link_created", document.id],
+        ) as Array<{ request_id: string }>;
+        expect(rows[0]?.request_id).toBe(response.body.requestId);
     });
 });
