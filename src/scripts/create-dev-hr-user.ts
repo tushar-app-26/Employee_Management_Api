@@ -12,10 +12,10 @@ async function createDevelopmentHrUser(): Promise<void> {
         return;
     }
 
-    const email = process.env.DEV_HR_EMAIL?.trim().toLowerCase();
-    const password = process.env.DEV_HR_PASSWORD;
-    const firstName = process.env.DEV_HR_FIRST_NAME?.trim();
-    const lastName = process.env.DEV_HR_LAST_NAME?.trim();
+    const email = config.DEV_HR_EMAIL?.trim().toLowerCase();
+    const password = config.DEV_HR_PASSWORD;
+    const firstName = config.DEV_HR_FIRST_NAME?.trim();
+    const lastName = config.DEV_HR_LAST_NAME?.trim();
 
     if (!firstName || !lastName) {
         console.error("Set DEV_HR_FIRST_NAME and DEV_HR_LAST_NAME for the development HR account.");

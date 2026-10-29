@@ -2,6 +2,7 @@ import { Router } from "express";
 import { authController } from "../controllers/auth.controller.js";
 import { authenticate } from "../middlewares/auth.middleware.js";
 import { validateRequest } from "../middlewares/validate-request.js";
+import { paginationQuerySchema } from "../validators/pagination.validator.js";
 import {
     registerSchema,
     loginSchema,
@@ -46,7 +47,15 @@ router.post(
 router.get(
     "/sessions",
     authenticate,
+    validateRequest(paginationQuerySchema, "query"),
     authController.sessions.bind(authController),
+);
+
+router.get(
+    "/sessions/history",
+    authenticate,
+    validateRequest(paginationQuerySchema, "query"),
+    authController.sessionHistory.bind(authController),
 );
 
 router.get(
