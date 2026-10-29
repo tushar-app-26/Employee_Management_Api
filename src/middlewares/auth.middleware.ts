@@ -3,11 +3,13 @@ import type { Request, Response, NextFunction } from "express";
 import jwt from "jsonwebtoken";
 import { config } from "../config/config.js";
 import { ApiResponse } from "../utils/api-response.js";
-import { AppDataSource } from "../config/database.js";
+import { findActiveAccountForSession } from "../repositories/authorization.repository.js";
+import { sessionService } from "../services/session.service.js";
 
 export interface AuthPayload {
     sub: string;
     role: "admin" | "hr" | "manager" | "employee";
+    sid: string;
 }
 
 declare global {
@@ -36,12 +38,18 @@ export async function authenticate(
     const token = authorization.slice(7).trim();
 
     if (!token) {
-        return ApiResponse.send(res, 401, "Invalid authentication token");
+        return ApiResponse.send(
+            res,
+            401,
+            "Invalid authentication token",
+        );
     }
 
     let decoded: string | jwt.JwtPayload;
+
     try {
         decoded = jwt.verify(token, config.JWT_SECRET, {
+            algorithms: ["HS256"],
             issuer: "employee-management-api",
             audience: "employee-management-client",
         });
@@ -57,35 +65,42 @@ export async function authenticate(
         typeof decoded === "string" ||
         typeof decoded.sub !== "string" ||
         typeof decoded.sid !== "string" ||
-        !["admin", "hr", "manager", "employee"].includes(String(decoded.role))
+        !["admin", "hr", "manager", "employee"].includes(
+            String(decoded.role),
+        )
     ) {
-        return ApiResponse.send(res, 401, "Invalid authentication token");
+        return ApiResponse.send(
+            res,
+            401,
+            "Invalid authentication token",
+        );
     }
 
     try {
-        // Read the current account state and role on each protected request.
-        // This immediately invalidates existing access tokens after deactivation
-        // or a role change instead of trusting stale JWT role claims.
-        const accounts: Array<{ id: string; role_id: AuthPayload["role"] }> = await AppDataSource.query(
-            `SELECT account.id, account.role_id
-             FROM users AS account
-             WHERE account.id = $1
-               AND account.is_active = TRUE
-               AND EXISTS (
-                   SELECT 1 FROM refresh_tokens AS session
-                   WHERE session.user_id = account.id
-                     AND session.family_id = $2
-                     AND session.revoked_at IS NULL
-                     AND session.expires_at > NOW()
-               )`,
-            [decoded.sub, decoded.sid],
+        const account = await sessionService.getAccount(
+            decoded.sid,
+            decoded.sub,
+            () =>
+                findActiveAccountForSession(
+                    decoded.sub as string,
+                    decoded.sid as string,
+                ),
         );
-        const account = accounts[0];
+
         if (!account) {
-            return ApiResponse.send(res, 401, "Account is inactive or unavailable");
+            return ApiResponse.send(
+                res,
+                401,
+                "Account is inactive or session is unavailable",
+            );
         }
 
-        req.auth = { sub: account.id, role: account.role_id };
+        req.auth = {
+            sub: account.id,
+            role: account.role,
+            sid: decoded.sid,
+        };
+
         return next();
     } catch (error) {
         return next(error);

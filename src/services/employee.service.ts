@@ -7,6 +7,7 @@ import { employeeRepository } from "../repositories/employee.repository.js";
 import { userRepository } from "../repositories/user.repository.js";
 import { AppError } from "../errors/app-error.js";
 import { auditService } from "./audit.service.js";
+import { fingerprintJson, redisCoordinationService } from "./redis-coordination.service.js";
 import type { AuthPayload } from "../middlewares/auth.middleware.js";
 import type { CreateEmployeeInput, UpdateEmployeeInput } from "../domain/employee.js";
 import type { EmployeeListQuery } from "../validators/employee.validator.js";
@@ -170,7 +171,22 @@ export class EmployeeService {
         };
     }
 
-    async createEmployee(input: CreateEmployeeInput, actorUserId?: string, requestId?: string) {
+    async createEmployee(
+        input: CreateEmployeeInput,
+        actorUserId?: string,
+        requestId?: string,
+        idempotencyKey?: string,
+    ) {
+        return redisCoordinationService.runIdempotent({
+            scope: "employee-create",
+            actorId: actorUserId ?? "system",
+            requestKey: idempotencyKey,
+            fingerprint: fingerprintJson(input),
+            operation: () => this.createEmployeeOnce(input, actorUserId, requestId),
+        });
+    }
+
+    private async createEmployeeOnce(input: CreateEmployeeInput, actorUserId?: string, requestId?: string) {
         return AppDataSource.transaction(async (manager) => {
             const users = manager.getRepository(UserEntity);
             const employees = manager.getRepository(EmployeeEntity);
@@ -220,6 +236,22 @@ export class EmployeeService {
                 if (forbidden.length) throw new AppError(403, "Managers may only update phone and job title for direct reports");
             } else if (actor.role !== "admin" && actor.role !== "hr") {
                 throw new AppError(403, "You cannot update this employee profile");
+            }
+
+            const disablesAccount = input.employmentStatus === "inactive" || input.employmentStatus === "terminated";
+            if (disablesAccount && employee.userId) {
+                const linkedUser = await manager.getRepository(UserEntity).findOneBy({ id: employee.userId });
+                if (linkedUser?.role === "admin" && linkedUser.isActive) {
+                    if (linkedUser.id === actor.sub) {
+                        throw new AppError(400, "Administrators cannot deactivate their own account");
+                    }
+                    const activeAdmins: Array<{ id: string }> = await manager.query(
+                        "SELECT id FROM users WHERE role_id = 'admin' AND is_active = TRUE FOR UPDATE",
+                    );
+                    if (activeAdmins.length <= 1) {
+                        throw new AppError(400, "The last active administrator cannot be deactivated or demoted");
+                    }
+                }
             }
 
             if (input.departmentId !== undefined && !await manager.getRepository(DepartmentEntity).findOneBy({ id: input.departmentId })) {

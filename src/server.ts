@@ -4,10 +4,14 @@ import "reflect-metadata";
 import { app } from "./app.js";
 import { config } from "./config/config.js";
 import { AppDataSource, checkDatabaseConnection } from "./config/database.js";
+import { closeRateLimitRedis, connectRateLimitRedis } from "./config/rate-limit-store.js";
+import { startEmployeeJobs, stopEmployeeJobs } from "./jobs/employee-jobs.scheduler.js";
 
 async function startServer(): Promise<void> {
     try {
+        await connectRateLimitRedis();
         await checkDatabaseConnection();
+        startEmployeeJobs();
 
         const server = app.listen(config.PORT, () => {
             console.log(`Server running on port ${config.PORT}`);
@@ -15,6 +19,12 @@ async function startServer(): Promise<void> {
 
         const shutdown = (signal: string): void => {
             console.log(`${signal} received. Shutting down...`);
+            const forcedExitTimer = setTimeout(() => {
+                console.error("Graceful shutdown timed out; forcing process exit");
+                process.exit(1);
+            }, config.SHUTDOWN_TIMEOUT_MS);
+            forcedExitTimer.unref();
+            stopEmployeeJobs();
 
             server.close((error) => {
                 if (error) {
@@ -22,14 +32,13 @@ async function startServer(): Promise<void> {
                     process.exitCode = 1;
                 }
 
-                void AppDataSource.destroy()
-                    .then(() => {
-                        console.log("Database connection closed");
-                    })
-                    .catch((dbError: unknown) => {
-                        console.error("Database shutdown failed:", dbError);
+                void Promise.all([AppDataSource.destroy(), closeRateLimitRedis()])
+                    .then(() => console.log("Database and Redis connections closed"))
+                    .catch((shutdownError: unknown) => {
+                        console.error("Dependency shutdown failed:", shutdownError);
                         process.exitCode = 1;
-                    });
+                    })
+                    .finally(() => clearTimeout(forcedExitTimer));
             });
         };
 
@@ -42,6 +51,7 @@ async function startServer(): Promise<void> {
         if (AppDataSource.isInitialized) {
             await AppDataSource.destroy().catch(() => undefined);
         }
+        await closeRateLimitRedis().catch(() => undefined);
     }
 }
 
