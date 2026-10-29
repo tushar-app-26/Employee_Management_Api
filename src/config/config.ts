@@ -54,6 +54,11 @@ const configSchema = z.object({
         .default(30),
 
     AUTH_RATE_LIMIT_MAX_REQUESTS: z.coerce.number().int().positive().max(100).default(10),
+    LOGIN_FAILURE_LIMIT: z.coerce.number().int().positive().max(100).default(5),
+    LOGIN_FAILURE_TTL_SECONDS: z.coerce.number().int().positive().max(86400).default(900),
+    DOCUMENT_LINK_LIMIT: z.coerce.number().int().positive().max(1000).default(10),
+    DOCUMENT_LINK_WINDOW_SECONDS: z.coerce.number().int().positive().max(3600).default(60),
+    IDEMPOTENCY_TTL_SECONDS: z.coerce.number().int().positive().max(86400).default(600),
     AUDIT_LOG_RETENTION_DAYS: z.coerce.number().int().positive().default(365),
     INACTIVE_EMPLOYEE_REVIEW_DAYS: z.coerce.number().int().positive().default(2555),
     DOCUMENT_STORAGE_DIR: z.string().min(1).default("var/private-documents"),

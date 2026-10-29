@@ -11,8 +11,10 @@ export class DocumentController {
                 req.file,
                 req.auth!,
                 String(res.locals.requestId ?? ""),
+                req.get("Idempotency-Key"),
             );
-            ApiResponse.send(res, 201, "Employee document uploaded successfully", data);
+            if (data.replayed) res.setHeader("Idempotency-Replayed", "true");
+            ApiResponse.send(res, 201, "Employee document uploaded successfully", data.value);
         } catch (error) { next(error); }
     }
 

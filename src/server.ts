@@ -5,11 +5,13 @@ import { app } from "./app.js";
 import { config } from "./config/config.js";
 import { AppDataSource, checkDatabaseConnection } from "./config/database.js";
 import { closeRateLimitRedis, connectRateLimitRedis } from "./config/rate-limit-store.js";
+import { startEmployeeJobs, stopEmployeeJobs } from "./jobs/employee-jobs.scheduler.js";
 
 async function startServer(): Promise<void> {
     try {
         await connectRateLimitRedis();
         await checkDatabaseConnection();
+        startEmployeeJobs();
 
         const server = app.listen(config.PORT, () => {
             console.log(`Server running on port ${config.PORT}`);
@@ -22,6 +24,7 @@ async function startServer(): Promise<void> {
                 process.exit(1);
             }, config.SHUTDOWN_TIMEOUT_MS);
             forcedExitTimer.unref();
+            stopEmployeeJobs();
 
             server.close((error) => {
                 if (error) {

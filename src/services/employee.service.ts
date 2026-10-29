@@ -7,6 +7,7 @@ import { employeeRepository } from "../repositories/employee.repository.js";
 import { userRepository } from "../repositories/user.repository.js";
 import { AppError } from "../errors/app-error.js";
 import { auditService } from "./audit.service.js";
+import { fingerprintJson, redisCoordinationService } from "./redis-coordination.service.js";
 import type { AuthPayload } from "../middlewares/auth.middleware.js";
 import type { CreateEmployeeInput, UpdateEmployeeInput } from "../domain/employee.js";
 import type { EmployeeListQuery } from "../validators/employee.validator.js";
@@ -170,7 +171,22 @@ export class EmployeeService {
         };
     }
 
-    async createEmployee(input: CreateEmployeeInput, actorUserId?: string, requestId?: string) {
+    async createEmployee(
+        input: CreateEmployeeInput,
+        actorUserId?: string,
+        requestId?: string,
+        idempotencyKey?: string,
+    ) {
+        return redisCoordinationService.runIdempotent({
+            scope: "employee-create",
+            actorId: actorUserId ?? "system",
+            requestKey: idempotencyKey,
+            fingerprint: fingerprintJson(input),
+            operation: () => this.createEmployeeOnce(input, actorUserId, requestId),
+        });
+    }
+
+    private async createEmployeeOnce(input: CreateEmployeeInput, actorUserId?: string, requestId?: string) {
         return AppDataSource.transaction(async (manager) => {
             const users = manager.getRepository(UserEntity);
             const employees = manager.getRepository(EmployeeEntity);

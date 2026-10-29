@@ -61,13 +61,15 @@ export class EmployeeController {
                 req.body,
                 req.auth?.sub,
                 String(res.locals.requestId ?? ""),
+                req.get("Idempotency-Key"),
             );
+            if (employee.replayed) res.setHeader("Idempotency-Replayed", "true");
 
             ApiResponse.send(
                 res,
                 201,
                 "Employee created successfully",
-                employee,
+                employee.value,
             );
         } catch (error) {
             next(error);

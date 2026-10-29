@@ -52,6 +52,12 @@ A versioned REST API for managing employees and departments. It is built with No
 - `npm run retention:report` — count inactive employee records past the review interval; does not delete employee data.
 - `npm run audit:prune` — delete audit records older than `AUDIT_LOG_RETENTION_DAYS`; run only under the approved retention policy.
 
+## Employee scheduled jobs
+
+The server starts two `node-cron` jobs after PostgreSQL initializes: `0 * * * *` logs Engineering employees once per hour, and `*/15 * * * *` logs employees with missing phone numbers every 15 minutes. Both schedules use UTC. Entries are written to `audit_logs` with the employee UUID as `resource_id`; a database uniqueness index prevents duplicate entries for the same employee and scheduled run while allowing later runs to log them again. Apply migrations with `npm run migration:run` before deploying the jobs.
+
+To verify the latest entries, query `audit_logs` for the actions `Engineering employee detected` and `Employee phone number missing`. The associated `created_at` column is populated by PostgreSQL.
+
 ## Architecture and resilience documentation
 
 - [High-level and low-level design](docs/hld-lld.md) includes the component diagram, module contracts, ERD, and API error types.

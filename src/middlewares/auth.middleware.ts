@@ -4,10 +4,12 @@ import jwt from "jsonwebtoken";
 import { config } from "../config/config.js";
 import { ApiResponse } from "../utils/api-response.js";
 import { findActiveAccountForSession } from "../repositories/authorization.repository.js";
+import { sessionService } from "../services/session.service.js";
 
 export interface AuthPayload {
     sub: string;
     role: "admin" | "hr" | "manager" | "employee";
+    sid: string;
 }
 
 declare global {
@@ -36,10 +38,15 @@ export async function authenticate(
     const token = authorization.slice(7).trim();
 
     if (!token) {
-        return ApiResponse.send(res, 401, "Invalid authentication token");
+        return ApiResponse.send(
+            res,
+            401,
+            "Invalid authentication token",
+        );
     }
 
     let decoded: string | jwt.JwtPayload;
+
     try {
         decoded = jwt.verify(token, config.JWT_SECRET, {
             algorithms: ["HS256"],
@@ -58,21 +65,42 @@ export async function authenticate(
         typeof decoded === "string" ||
         typeof decoded.sub !== "string" ||
         typeof decoded.sid !== "string" ||
-        !["admin", "hr", "manager", "employee"].includes(String(decoded.role))
+        !["admin", "hr", "manager", "employee"].includes(
+            String(decoded.role),
+        )
     ) {
-        return ApiResponse.send(res, 401, "Invalid authentication token");
+        return ApiResponse.send(
+            res,
+            401,
+            "Invalid authentication token",
+        );
     }
 
     try {
-        // Read the current account state and role on each protected request.
-        // This immediately invalidates existing access tokens after deactivation
-        // or a role change instead of trusting stale JWT role claims.
-        const account = await findActiveAccountForSession(decoded.sub, decoded.sid);
+        const account = await sessionService.getAccount(
+            decoded.sid,
+            decoded.sub,
+            () =>
+                findActiveAccountForSession(
+                    decoded.sub as string,
+                    decoded.sid as string,
+                ),
+        );
+
         if (!account) {
-            return ApiResponse.send(res, 401, "Account is inactive or unavailable");
+            return ApiResponse.send(
+                res,
+                401,
+                "Account is inactive or session is unavailable",
+            );
         }
 
-        req.auth = { sub: account.id, role: account.role };
+        req.auth = {
+            sub: account.id,
+            role: account.role,
+            sid: decoded.sid,
+        };
+
         return next();
     } catch (error) {
         return next(error);

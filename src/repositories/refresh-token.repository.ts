@@ -6,6 +6,7 @@ export const refreshTokenRepository =
     AppDataSource.getRepository(RefreshTokenEntity);
 
 export interface AuthSessionSummary {
+    // Public session `id` is familyId; RefreshTokenEntity.id is one rotation row.
     id: string;
     createdAt: Date;
     expiresAt: Date;

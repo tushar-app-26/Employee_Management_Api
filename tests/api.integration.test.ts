@@ -16,11 +16,22 @@ import { DepartmentEntity } from "../src/entities/department.entity.js";
 import { EmployeeDocumentEntity } from "../src/entities/employee-document.entity.js";
 import { EmployeeEntity } from "../src/entities/employee.entity.js";
 import { UserEntity, type UserRole } from "../src/entities/user.entity.js";
+import { RefreshTokenEntity } from "../src/entities/refresh-token.entity.js";
 import { AppError } from "../src/errors/app-error.js";
 import { errorHandler } from "../src/errors/error-handler.js";
 import { storageDirectory } from "../src/middlewares/document-upload.js";
 import { requestIdMiddleware } from "../src/middlewares/request-id.js";
+import { departmentRepository } from "../src/repositories/department.repository.js";
+import { createDepartmentCache, DEPARTMENT_LIST_CACHE_KEY, departmentCache } from "../src/services/department-cache.service.js";
+import { departmentService } from "../src/services/department.service.js";
 import { employeeService } from "../src/services/employee.service.js";
+import { rateLimitRedisClient } from "../src/config/rate-limit-store.js";
+import { sessionService } from "../src/services/session.service.js";
+import {
+    EmployeeScheduledJobsService,
+    ENGINEERING_EMPLOYEE_ACTION,
+    MISSING_PHONE_ACTION,
+} from "../src/services/employee-scheduled-jobs.service.js";
 
 const password = "CorrectHorseBatteryStaple123!";
 const api = "/api/v1";
@@ -222,6 +233,87 @@ describe("mandatory assignment integration scenarios", () => {
         expect(response.body.data.pagination).toMatchObject({ page: 1, limit: 1, total: 2, totalPages: 2 });
     });
 
+    test("login uses one family ID for JWT sid, PostgreSQL, and Redis", async () => {
+        const account = await login(await createUser());
+        const sid = (jwt.decode(account.accessToken) as jwt.JwtPayload).sid as string;
+        const tokenRows = await AppDataSource.getRepository(RefreshTokenEntity).findBy({ familyId: sid });
+        expect(tokenRows).toHaveLength(1);
+        expect(tokenRows[0]?.userId).toBe(account.user.id);
+        expect(tokenRows[0]?.id).not.toBe(sid);
+
+        const redisValue = await rateLimitRedisClient!.get(`session:${sid}`);
+        expect(redisValue).not.toBeNull();
+        expect(JSON.parse(redisValue!)).toMatchObject({ sessionId: sid, userId: account.user.id });
+    });
+
+    test("session API id is the family ID and fetch/revoke target that family", async () => {
+        const user = await createUser();
+        const first = await login(user);
+        const firstSid = (jwt.decode(first.accessToken) as jwt.JwtPayload).sid as string;
+        const second = await login(user);
+        const secondSid = (jwt.decode(second.accessToken) as jwt.JwtPayload).sid as string;
+        expect(firstSid).not.toBe(secondSid);
+
+        const listing = await request(app).get(`${api}/auth/sessions`).set(asUser(first.accessToken));
+        expect(listing.status).toBe(200);
+        expect(listing.body.data.items.map((item: { id: string }) => item.id).sort()).toEqual([firstSid, secondSid].sort());
+
+        const detail = await request(app).get(`${api}/auth/sessions/${firstSid}`).set(asUser(second.accessToken));
+        expect(detail.status).toBe(200);
+        expect(detail.body.data.id).toBe(firstSid);
+
+        const revoked = await request(app).delete(`${api}/auth/sessions/${firstSid}`).set(asUser(second.accessToken));
+        expect(revoked.status).toBe(200);
+        expect(await rateLimitRedisClient!.get(`session:${firstSid}`)).toBeNull();
+        expect(await rateLimitRedisClient!.get(`session:${secondSid}`)).not.toBeNull();
+        const firstFamily = await AppDataSource.getRepository(RefreshTokenEntity).findBy({ familyId: firstSid });
+        const secondFamily = await AppDataSource.getRepository(RefreshTokenEntity).findBy({ familyId: secondSid });
+        expect(firstFamily.every((row) => row.revokedAt !== null)).toBe(true);
+        expect(secondFamily.some((row) => row.revokedAt === null)).toBe(true);
+    });
+
+    test("refresh rotation retains family ID and missing Redis cache is rebuilt from PostgreSQL", async () => {
+        const account = await login(await createUser());
+        const sid = (jwt.decode(account.accessToken) as jwt.JwtPayload).sid as string;
+        const rotated = await request(app).post(`${api}/auth/refresh`).send({ refreshToken: account.refreshToken });
+        expect(rotated.status).toBe(200);
+        expect((jwt.decode(rotated.body.data.accessToken) as jwt.JwtPayload).sid).toBe(sid);
+
+        await rateLimitRedisClient!.del(`session:${sid}`);
+        const response = await request(app).get(`${api}/auth/sessions`).set(asUser(rotated.body.data.accessToken));
+        expect(response.status).toBe(200);
+        expect(await rateLimitRedisClient!.get(`session:${sid}`)).not.toBeNull();
+    });
+
+    test("Redis read failure falls back to PostgreSQL authorization", async () => {
+        const account = await login(await createUser());
+        const getSpy = vi.spyOn(rateLimitRedisClient!, "get").mockRejectedValueOnce(new Error("Redis unavailable"));
+        try {
+            const response = await request(app).get(`${api}/auth/sessions`).set(asUser(account.accessToken));
+            expect(response.status).toBe(200);
+        } finally {
+            getSpy.mockRestore();
+        }
+    });
+
+    test("Redis cleanup failure does not undo logout or preserve authorization", async () => {
+        const account = await login(await createUser());
+        const sid = (jwt.decode(account.accessToken) as jwt.JwtPayload).sid as string;
+        const delSpy = vi.spyOn(rateLimitRedisClient!, "del").mockRejectedValueOnce(new Error("Redis unavailable"));
+        const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+        try {
+            const logout = await request(app).post(`${api}/auth/logout`).send({ refreshToken: account.refreshToken });
+            expect(logout.status).toBe(200);
+            expect(delSpy).toHaveBeenCalled();
+            expect((await AppDataSource.getRepository(RefreshTokenEntity).findBy({ familyId: sid }))
+                .every((row) => row.revokedAt !== null)).toBe(true);
+            expect((await request(app).get(`${api}/auth/sessions`).set(asUser(account.accessToken))).status).toBe(401);
+        } finally {
+            delSpy.mockRestore();
+            warnSpy.mockRestore();
+        }
+    });
+
     test("unlinked employee accounts can be paginated", async () => {
         const admin = await adminAccount();
         await createUser();
@@ -242,10 +334,25 @@ describe("mandatory assignment integration scenarios", () => {
 
         const reused = await request(app).post(`${api}/auth/refresh`).send({ refreshToken: account.refreshToken });
         expect(reused.status).toBe(401);
+        const sid = (jwt.decode(account.accessToken) as jwt.JwtPayload).sid as string;
+        expect(await rateLimitRedisClient!.get(`session:${sid}`)).toBeNull();
         const replacementReuse = await request(app).post(`${api}/auth/refresh`).send({
             refreshToken: rotated.body.data.refreshToken,
         });
         expect(replacementReuse.status).toBe(401);
+    });
+
+    test("password change revokes refresh families and removes Redis sessions", async () => {
+        const account = await login(await createUser());
+        const sid = (jwt.decode(account.accessToken) as jwt.JwtPayload).sid as string;
+        const response = await request(app).post(`${api}/auth/change-password`)
+            .set(asUser(account.accessToken))
+            .send({ currentPassword: password, newPassword: "DifferentHorseBatteryStaple456!" });
+
+        expect(response.status).toBe(200);
+        expect(await rateLimitRedisClient!.get(`session:${sid}`)).toBeNull();
+        const rows = await AppDataSource.getRepository(RefreshTokenEntity).findBy({ familyId: sid });
+        expect(rows.every((row) => row.revokedAt !== null)).toBe(true);
     });
 
     // 5. Logout revokes one session; logout-all revokes the remaining user's sessions.
@@ -253,14 +360,82 @@ describe("mandatory assignment integration scenarios", () => {
         const user = await createUser();
         const first = await login(user);
         const second = await login(user);
+        const firstSid = (jwt.decode(first.accessToken) as jwt.JwtPayload).sid as string;
+        const secondSid = (jwt.decode(second.accessToken) as jwt.JwtPayload).sid as string;
         expect((await request(app).post(`${api}/auth/logout`).send({ refreshToken: first.refreshToken })).status).toBe(200);
+        expect(await rateLimitRedisClient!.get(`session:${firstSid}`)).toBeNull();
         const logoutAll = await request(app).post(`${api}/auth/logout-all`).set(asUser(second.accessToken));
         expect(logoutAll.status).toBe(200);
+        expect(await rateLimitRedisClient!.get(`session:${secondSid}`)).toBeNull();
+        expect((await request(app).get(`${api}/auth/sessions`).set(asUser(second.accessToken))).status).toBe(401);
         const active = await AppDataSource.query(
             `SELECT COUNT(*)::int AS count FROM refresh_tokens WHERE user_id = $1 AND revoked_at IS NULL`,
             [user.id],
         ) as Array<{ count: number }>;
         expect(active[0]?.count).toBe(0);
+    });
+
+    test("Engineering scheduled job logs only Engineering employees once per hourly run", async () => {
+        const engineering = await createDepartment("Engineering");
+        const operations = await createDepartment("Operations");
+        const first = await createEmployee(engineering.id);
+        const second = await createEmployee(engineering.id);
+        await createEmployee(operations.id);
+        const jobs = new EmployeeScheduledJobsService();
+        const firstRun = new Date("2026-10-27T10:05:00.000Z");
+
+        await Promise.all([
+            jobs.logEngineeringEmployees(firstRun),
+            jobs.logEngineeringEmployees(firstRun),
+        ]);
+        let rows = await AppDataSource.query(
+            `SELECT resource_id, action, created_at
+             FROM audit_logs WHERE action = $1 ORDER BY resource_id`,
+            [ENGINEERING_EMPLOYEE_ACTION],
+        ) as Array<{ resource_id: string; action: string; created_at: Date }>;
+        expect(rows.map((row) => row.resource_id)).toEqual([first.id, second.id].sort());
+        expect(rows.every((row) => row.action === ENGINEERING_EMPLOYEE_ACTION && row.created_at)).toBe(true);
+
+        await jobs.logEngineeringEmployees(new Date("2026-10-27T11:00:00.000Z"));
+        const nextHourlyRun = await AppDataSource.query(
+            `SELECT resource_id FROM audit_logs WHERE action = $1`,
+            [ENGINEERING_EMPLOYEE_ACTION],
+        ) as Array<{ resource_id: string }>;
+        expect(nextHourlyRun).toHaveLength(4);
+    });
+
+    test("missing-phone scheduled job matches null, blank, and whitespace phone values only", async () => {
+        const department = await createDepartment("Phone audit");
+        const missingValues: Array<string | null> = [null, "", "   ", "\t\n"];
+        const matching = await Promise.all(missingValues.map(async (phone) => {
+            const employee = await createEmployee(department.id);
+            employee.phone = phone;
+            return AppDataSource.getRepository(EmployeeEntity).save(employee);
+        }));
+        const present = await createEmployee(department.id);
+        present.phone = "555-0100";
+        await AppDataSource.getRepository(EmployeeEntity).save(present);
+        const jobs = new EmployeeScheduledJobsService();
+        const firstRun = new Date("2026-10-27T10:15:00.000Z");
+
+        await Promise.all([
+            jobs.logEmployeesWithMissingPhoneNumbers(firstRun),
+            jobs.logEmployeesWithMissingPhoneNumbers(firstRun),
+        ]);
+        let rows = await AppDataSource.query(
+            `SELECT resource_id, action, created_at
+             FROM audit_logs WHERE action = $1 ORDER BY resource_id`,
+            [MISSING_PHONE_ACTION],
+        ) as Array<{ resource_id: string; action: string; created_at: Date }>;
+        expect(rows.map((row) => row.resource_id)).toEqual(matching.map((employee) => employee.id).sort());
+        expect(rows.every((row) => row.action === MISSING_PHONE_ACTION && row.created_at)).toBe(true);
+
+        await jobs.logEmployeesWithMissingPhoneNumbers(new Date("2026-10-27T10:30:00.000Z"));
+        const nextQuarterHourRun = await AppDataSource.query(
+            `SELECT resource_id FROM audit_logs WHERE action = $1`,
+            [MISSING_PHONE_ACTION],
+        ) as Array<{ resource_id: string }>;
+        expect(nextQuarterHourRun).toHaveLength(8);
     });
 
     // 6. Employees cannot read another employee's private profile.
@@ -389,11 +564,12 @@ describe("mandatory assignment integration scenarios", () => {
         expect(await AppDataSource.getRepository(EmployeeEntity).countBy({ userId: user.id })).toBe(0);
     });
 
-    // 16. This isolated app instance uses a one-request auth limit so this assertion cannot consume
-    // the main app's rate-limit budget for the rest of the integration suite.
+    // 16. This isolated app instance uses a private in-memory limiter for deterministic testing.
     test("repeated authentication requests trigger rate limiting", async () => {
         const previousLimit = process.env.AUTH_RATE_LIMIT_MAX_REQUESTS;
+        const previousRedisUrl = process.env.REDIS_URL;
         process.env.AUTH_RATE_LIMIT_MAX_REQUESTS = "1";
+        process.env.REDIS_URL = "";
         vi.resetModules();
         try {
             const { app: limitedApp } = await import("../src/app.js");
@@ -404,6 +580,8 @@ describe("mandatory assignment integration scenarios", () => {
         } finally {
             if (previousLimit === undefined) delete process.env.AUTH_RATE_LIMIT_MAX_REQUESTS;
             else process.env.AUTH_RATE_LIMIT_MAX_REQUESTS = previousLimit;
+            if (previousRedisUrl === undefined) delete process.env.REDIS_URL;
+            else process.env.REDIS_URL = previousRedisUrl;
             vi.resetModules();
         }
     });
@@ -503,7 +681,7 @@ describe("mandatory assignment integration scenarios", () => {
         await expect(employeeService.updateEmployee(
             profile.id,
             { employmentStatus: "terminated" },
-            { sub: randomUUID(), role: "admin" },
+            { sub: randomUUID(), role: "admin", sid: randomUUID() },
         )).rejects.toMatchObject({ statusCode: 400 });
         expect((await AppDataSource.getRepository(UserEntity).findOneByOrFail({ id: lastAdmin.id })).isActive).toBe(true);
         expect((await AppDataSource.getRepository(EmployeeEntity).findOneByOrFail({ id: profile.id })).employmentStatus).toBe("active");
@@ -716,5 +894,183 @@ describe("mandatory assignment integration scenarios", () => {
             ["employee_document.download_link_created", document.id],
         ) as Array<{ request_id: string }>;
         expect(rows[0]?.request_id).toBe(response.body.requestId);
+    });
+});
+
+describe("department-list Redis cache", () => {
+    beforeEach(async () => {
+        await departmentCache.invalidate();
+    });
+
+    afterEach(() => {
+        vi.restoreAllMocks();
+    });
+
+    test("returns the cached response for the exact default query without querying PostgreSQL", async () => {
+        const cached = {
+            items: [{
+                id: randomUUID(),
+                name: "Cached department",
+                description: null,
+                createdAt: new Date(),
+                updatedAt: new Date(),
+            }],
+            pagination: { page: 1, limit: 10, total: 1, totalPages: 1 },
+        };
+        const cacheRead = vi.spyOn(departmentCache, "getDefault").mockResolvedValue(cached);
+        const query = vi.spyOn(departmentRepository, "createQueryBuilder");
+
+        const result = await departmentService.getAllDepartments();
+
+        expect(result).toEqual(cached);
+        expect(cacheRead).toHaveBeenCalledOnce();
+        expect(query).not.toHaveBeenCalled();
+    });
+
+    test("fills the cache on a default-query miss and preserves the paginated response", async () => {
+        await createDepartment("Cache miss department");
+        vi.spyOn(departmentCache, "getDefault").mockResolvedValue(undefined);
+        const cacheWrite = vi.spyOn(departmentCache, "setDefault").mockResolvedValue();
+
+        const result = await departmentService.getAllDepartments();
+
+        expect(result.items).toHaveLength(1);
+        expect(result.pagination).toEqual({ page: 1, limit: 10, total: 1, totalPages: 1 });
+        expect(cacheWrite).toHaveBeenCalledWith(result);
+    });
+
+    test("search, non-default pagination, and custom sorting bypass the default cache", async () => {
+        await createDepartment("Engineering");
+        await createDepartment("Human Resources");
+        const cacheRead = vi.spyOn(departmentCache, "getDefault");
+        const cacheWrite = vi.spyOn(departmentCache, "setDefault");
+
+        const searched = await departmentService.getAllDepartments({
+            page: 1, limit: 10, sortBy: "createdAt", sortOrder: "desc", search: "Engineering",
+        });
+        const paged = await departmentService.getAllDepartments({
+            page: 2, limit: 10, sortBy: "createdAt", sortOrder: "desc",
+        });
+        const sorted = await departmentService.getAllDepartments({
+            page: 1, limit: 10, sortBy: "name", sortOrder: "asc",
+        });
+
+        expect(searched.items).toHaveLength(1);
+        expect(paged.pagination.page).toBe(2);
+        expect(sorted.items.map((item) => item.name)).toEqual(["Engineering", "Human Resources"]);
+        expect(cacheRead).not.toHaveBeenCalled();
+        expect(cacheWrite).not.toHaveBeenCalled();
+    });
+
+    test("invalidates after department creation has committed", async () => {
+        let visibleAfterCommit = false;
+        const invalidation = vi.spyOn(departmentCache, "invalidate").mockImplementation(async () => {
+            visibleAfterCommit = Boolean(await departmentRepository.findOneBy({ name: "Created after commit" }));
+        });
+
+        const created = await departmentService.createDepartment({ name: "Created after commit" });
+
+        expect(created.name).toBe("Created after commit");
+        expect(invalidation).toHaveBeenCalledOnce();
+        expect(visibleAfterCommit).toBe(true);
+    });
+
+    test("invalidates after department update has committed", async () => {
+        const department = await createDepartment("Before update");
+        let updatedValueVisible = false;
+        const invalidation = vi.spyOn(departmentCache, "invalidate").mockImplementation(async () => {
+            const committed = await departmentRepository.findOneBy({ id: department.id });
+            updatedValueVisible = committed?.name === "After update";
+        });
+
+        const updated = await departmentService.updateDepartment(department.id, { name: "After update" });
+
+        expect(updated?.name).toBe("After update");
+        expect(invalidation).toHaveBeenCalledOnce();
+        expect(updatedValueVisible).toBe(true);
+    });
+
+    test("invalidates after department deletion has committed", async () => {
+        const department = await createDepartment("Delete after commit");
+        let rowIsGoneAfterCommit = false;
+        const invalidation = vi.spyOn(departmentCache, "invalidate").mockImplementation(async () => {
+            rowIsGoneAfterCommit = !(await departmentRepository.findOneBy({ id: department.id }));
+        });
+
+        const deleted = await departmentService.deleteDepartment(department.id);
+
+        expect(deleted).toBe(true);
+        expect(invalidation).toHaveBeenCalledOnce();
+        expect(rowIsGoneAfterCommit).toBe(true);
+    });
+
+    test("does not invalidate for a nonexistent department update or deletion", async () => {
+        const invalidation = vi.spyOn(departmentCache, "invalidate");
+        const missingId = randomUUID();
+
+        expect(await departmentService.updateDepartment(missingId, { name: "No department" })).toBeNull();
+        expect(await departmentService.deleteDepartment(missingId)).toBe(false);
+        expect(invalidation).not.toHaveBeenCalled();
+    });
+
+    test("falls back to PostgreSQL when Redis is unavailable", async () => {
+        await createDepartment("Redis unavailable fallback");
+        const failingRedis = {
+            get: vi.fn().mockRejectedValue(new Error("Redis unavailable")),
+            set: vi.fn(),
+            del: vi.fn(),
+        } as unknown as NonNullable<typeof rateLimitRedisClient>;
+        const cache = createDepartmentCache(failingRedis, vi.fn().mockResolvedValue(undefined));
+        vi.spyOn(console, "warn").mockImplementation(() => undefined);
+        vi.spyOn(departmentCache, "getDefault").mockImplementation(() => cache.getDefault());
+        vi.spyOn(departmentCache, "setDefault").mockResolvedValue();
+
+        const result = await departmentService.getAllDepartments();
+
+        expect(result.items.map((item) => item.name)).toContain("Redis unavailable fallback");
+        expect(failingRedis.get).toHaveBeenCalledWith(DEPARTMENT_LIST_CACHE_KEY);
+    });
+
+    test("malformed cached JSON is deleted and treated as a cache miss", async () => {
+        await createDepartment("Malformed cache fallback");
+        const malformedRedis = {
+            get: vi.fn().mockResolvedValue("{not-json"),
+            set: vi.fn(),
+            del: vi.fn().mockResolvedValue(1),
+        } as unknown as NonNullable<typeof rateLimitRedisClient>;
+        const cache = createDepartmentCache(malformedRedis, vi.fn().mockResolvedValue(undefined));
+        vi.spyOn(console, "warn").mockImplementation(() => undefined);
+        vi.spyOn(departmentCache, "getDefault").mockImplementation(() => cache.getDefault());
+        vi.spyOn(departmentCache, "setDefault").mockResolvedValue(undefined);
+
+        const result = await departmentService.getAllDepartments();
+
+        expect(result.items.map((item) => item.name)).toContain("Malformed cache fallback");
+        expect(malformedRedis.del).toHaveBeenCalledWith(DEPARTMENT_LIST_CACHE_KEY);
+    });
+
+    test("writes the default cache key without a TTL option", async () => {
+        const redis = {
+            get: vi.fn(),
+            set: vi.fn().mockResolvedValue("OK"),
+            del: vi.fn(),
+        } as unknown as NonNullable<typeof rateLimitRedisClient>;
+        const cache = createDepartmentCache(redis, vi.fn().mockResolvedValue(undefined));
+        const value = { items: [], pagination: { page: 1, limit: 10, total: 0, totalPages: 0 } };
+
+        await cache.setDefault(value);
+
+        expect(redis.set).toHaveBeenCalledWith(DEPARTMENT_LIST_CACHE_KEY, JSON.stringify(value));
+        expect(redis.set).toHaveBeenCalledTimes(1);
+    });
+
+    test("Redis invalidation failure does not report a committed department creation as failed", async () => {
+        vi.spyOn(console, "warn").mockImplementation(() => undefined);
+        vi.spyOn(departmentCache, "invalidate").mockRejectedValue(new Error("Redis unavailable"));
+
+        const created = await departmentService.createDepartment({ name: "Created despite Redis failure" });
+
+        expect(created.name).toBe("Created despite Redis failure");
+        expect(await departmentRepository.findOneBy({ id: created.id })).not.toBeNull();
     });
 });

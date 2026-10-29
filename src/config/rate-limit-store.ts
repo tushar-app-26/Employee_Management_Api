@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { createClient } from "redis";
 import { RedisStore } from "rate-limit-redis";
 import { config } from "./config.js";
@@ -40,7 +41,7 @@ export async function closeRateLimitRedis(): Promise<void> {
 export function createRateLimitStore(prefix: string): RedisStore | undefined {
     if (!rateLimitRedisClient) return undefined;
     return new RedisStore({
-        prefix,
+        prefix: config.NODE_ENV === "test" ? `test:${randomUUID()}:${prefix}` : prefix,
         sendCommand: async (...args: string[]) => {
             await connectRateLimitRedis();
             return rateLimitRedisClient.sendCommand(args as [string, ...string[]]);

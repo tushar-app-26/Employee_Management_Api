@@ -615,6 +615,19 @@
         "tags": [
           "Employees"
         ],
+        "parameters": [
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "description": "Optional key for safely retrying this employee-creation request. Reuse it only with the same request body.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200
+            }
+          }
+        ],
         "responses": {
           "201": {
             "description": "Employee created successfully",
@@ -2135,6 +2148,17 @@
         ],
         "parameters": [
           {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "description": "Optional key for safely retrying this upload. Reuse it only with the same file and employee.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200
+            }
+          },
+          {
             "name": "id",
             "in": "path",
             "required": true,
@@ -2162,6 +2186,9 @@
           },
           "404": {
             "description": "Employee or document not found"
+          },
+          "429": {
+            "description": "User exceeded the configured document download-link limit"
           },
           "413": {
             "description": "File exceeds configured limit"

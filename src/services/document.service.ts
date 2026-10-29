@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { rename, unlink } from "node:fs/promises";
 import { basename, resolve } from "node:path";
 import jwt from "jsonwebtoken";
@@ -12,6 +13,7 @@ import { acceptedTypes, storageDirectory, createStorageFilename } from "../middl
 import { auditService } from "./audit.service.js";
 import { documentStorage } from "./document-storage.js";
 import type { PaginationQuery } from "../validators/pagination.validator.js";
+import { fingerprintJson, redisCoordinationService } from "./redis-coordination.service.js";
 
 const downloadTokenTtlSeconds = 120;
 
@@ -47,7 +49,32 @@ function safeOriginalFilename(name: string) {
 }
 
 export class DocumentService {
-    async upload(employeeId: string, file: Express.Multer.File | undefined, actor: AuthPayload, requestId?: string) {
+    async upload(
+        employeeId: string,
+        file: Express.Multer.File | undefined,
+        actor: AuthPayload,
+        requestId?: string,
+        idempotencyKey?: string,
+    ) {
+        const contentHash = file
+            ? createHash("sha256").update(file.buffer).digest("hex")
+            : "missing-file";
+        return redisCoordinationService.runIdempotent({
+            scope: `document-upload:${employeeId}`,
+            actorId: actor.sub,
+            requestKey: idempotencyKey,
+            fingerprint: fingerprintJson({
+                employeeId,
+                originalFilename: file?.originalname,
+                mimeType: file?.mimetype,
+                size: file?.size,
+                contentHash,
+            }),
+            operation: () => this.uploadOnce(employeeId, file, actor, requestId),
+        });
+    }
+
+    private async uploadOnce(employeeId: string, file: Express.Multer.File | undefined, actor: AuthPayload, requestId?: string) {
         if (!file) throw new AppError(400, "Attach one file using the 'document' field");
         let employee: EmployeeEntity;
         try {
@@ -120,6 +147,19 @@ export class DocumentService {
 
     async createDownloadUrl(documentId: string, actor: AuthPayload, requestId?: string) {
         const document = await this.getAuthorizedDocument(documentId, actor);
+        const linkCount = await redisCoordinationService.incrementDocumentLinkCounter(
+            `doc-link-limit:${actor.sub}`,
+            config.DOCUMENT_LINK_WINDOW_SECONDS,
+            config.DOCUMENT_LINK_LIMIT,
+        );
+        if (linkCount !== undefined && linkCount > config.DOCUMENT_LINK_LIMIT) {
+            throw new AppError(
+                429,
+                "Too many document download links requested. Try again later.",
+                "DOCUMENT_LINK_RATE_LIMITED",
+            );
+        }
+
         const presignedUrl = await documentStorage.presignedDownloadUrl(
             document.storageFilename,
             safeOriginalFilename(document.originalFilename),
