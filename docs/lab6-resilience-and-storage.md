@@ -19,6 +19,18 @@ Common dependency codes are `DATABASE_UNAVAILABLE` and `STORAGE_UNAVAILABLE`; re
 
 Avoid retrying non-idempotent document upload requests blindly: the API generates a fresh storage key per attempt. Confirm the response or list the employee's documents before repeating after a client-side timeout.
 
+## Redis counters and idempotency
+
+Redis also coordinates three short-lived protections. Set the corresponding variables in `.env`; the defaults are shown below. PostgreSQL remains the permanent source of truth.
+
+| Use case | Redis key | Default policy | Behavior |
+| --- | --- | --- | --- |
+| Failed login attempts | `login-failures:{userId}` (unknown emails use a SHA-256 email identifier) | `LOGIN_FAILURE_LIMIT=5`, `LOGIN_FAILURE_TTL_SECONDS=900` | Atomic increment plus expiry on the first failure. A successful login clears the counter; reaching the limit temporarily rejects more attempts with 429. |
+| Download-link generation | `doc-link-limit:{userId}` | `DOCUMENT_LINK_LIMIT=10`, `DOCUMENT_LINK_WINDOW_SECONDS=60` | Atomic increment plus expiry on the first link request; requests over the configured limit receive 429. Authorization is checked before counting. |
+| Employee creation and document upload | `idempotency:{hashed-actor-scope-key}` | `IDEMPOTENCY_TTL_SECONDS=600` | Send an `Idempotency-Key` header. Redis atomically claims the key; concurrent duplicates receive 409 while processing, completed identical requests replay the stored response, and reusing a key with a different payload receives 409. Failed operations release their claim when possible. |
+
+The idempotency header is optional for backwards compatibility. A Redis claim prevents ordinary concurrent retries from running the operation twice, but Redis and PostgreSQL do not share a transaction. A process crash after the database commits but before Redis stores the completed result can leave a temporary processing key; this is not a strict exactly-once guarantee. For workflows requiring recovery across that failure window, add a durable PostgreSQL idempotency record written in the same transaction as the business data.
+
 ## S3 storage and recovery
 
 Production uses an S3 bucket with public access blocked. Uploads use server-generated UUID keys, validated content types, and server-side AES-256 encryption. PostgreSQL stores document metadata and the object key. The API returns only short-lived presigned GET URLs after checking employee access. The API's IAM identity needs object-level `s3:PutObject`, `s3:GetObject`, and `s3:DeleteObject` for the configured bucket prefix; it does not need public ACLs or bucket-wide administration.
@@ -38,6 +50,7 @@ For recoverability, enable S3 bucket versioning and an appropriate lifecycle/bac
 - Set `DOCUMENT_STORAGE_DRIVER=s3`, the matching AWS region and bucket, and credentials via a secret manager or workload IAM role.
 - Keep S3 public access blocked and grant only the application role the required object permissions.
 - Configure `REDIS_URL` for every production replica; all replicas must point at the same Redis service.
+- Tune `LOGIN_FAILURE_LIMIT`, `LOGIN_FAILURE_TTL_SECONDS`, `DOCUMENT_LINK_LIMIT`, `DOCUMENT_LINK_WINDOW_SECONDS`, and `IDEMPOTENCY_TTL_SECONDS` for the deployment and its user experience.
 - Tune database, S3, Redis, and shutdown timeout values to the deployment environment.
 - Alert on sustained `DATABASE_UNAVAILABLE`, `STORAGE_UNAVAILABLE`, Redis disconnects, failed cleanup logs, and orphan/missing-object reconciliation.
 - Keep `.env` and actual Postman environments out of source control; commit only templates with empty secret values.

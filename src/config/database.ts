@@ -7,6 +7,7 @@ import { EmployeeEntity } from "../entities/employee.entity.js";
 import { UserEntity } from "../entities/user.entity.js";
 import { RefreshTokenEntity } from "../entities/refresh-token.entity.js";
 import { EmployeeDocumentEntity } from "../entities/employee-document.entity.js";
+import { checkRedisReadiness as checkRedisConnection } from "./rate-limit-store.js";
 export const AppDataSource = new DataSource({
     type: "postgres",
     url: config.DATABASE_URL,
@@ -76,4 +77,8 @@ export async function checkDatabaseReadiness(): Promise<void> {
         throw new Error("Database connection has not been initialized");
     }
     await AppDataSource.query("SELECT 1");
+}
+
+export async function checkRedisReadiness(): Promise<void> {
+    await checkRedisConnection();
 }

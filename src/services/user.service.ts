@@ -6,6 +6,7 @@ import { AppError } from "../errors/app-error.js";
 import { auditService } from "./audit.service.js";
 import { listUnlinkedEmployeeUsers, userRepository } from "../repositories/user.repository.js";
 import type { PaginationQuery } from "../validators/pagination.validator.js";
+import { sessionLifecycleService } from "./session-lifecycle.service.js";
 
 export class UserService {
     async getUnlinkedEmployeeUsers(pagination: PaginationQuery) {
@@ -56,12 +57,25 @@ export class UserService {
             if (input.isActive === false || input.role !== undefined) {
                 // Role changes invalidate previously issued refresh sessions so
                 // the next login receives tokens reflecting the new role.
+                const affected: Array<{ family_id: string }> = await manager.query(
+                    `SELECT DISTINCT family_id FROM refresh_tokens
+                     WHERE user_id = $1 AND revoked_at IS NULL AND expires_at > NOW()`,
+                    [targetUserId],
+                );
                 await manager.getRepository(RefreshTokenEntity).createQueryBuilder()
                     .update(RefreshTokenEntity)
                     .set({ revokedAt: new Date() })
                     .where('"user_id" = :userId', { userId: targetUserId })
                     .andWhere('"revoked_at" IS NULL')
                     .execute();
+                for (const session of affected) await sessionLifecycleService.record({
+                    eventKey: `SESSION_REVOKED:${session.family_id}`,
+                    userId: targetUserId,
+                    sessionId: session.family_id,
+                    eventType: "SESSION_REVOKED",
+                    correlationId: requestId,
+                    details: { reason: input.isActive === false ? "account_deactivated" : "role_changed" },
+                }, manager);
             }
 
             const action = input.role !== undefined ? "user.role_changed"
@@ -86,12 +100,25 @@ export class UserService {
                  WHERE user_id = $1 AND revoked_at IS NULL AND expires_at > NOW()`,
                 [targetUserId],
             );
+            const families: Array<{ family_id: string }> = await manager.query(
+                `SELECT DISTINCT family_id FROM refresh_tokens
+                 WHERE user_id = $1 AND revoked_at IS NULL AND expires_at > NOW()`,
+                [targetUserId],
+            );
             await manager.getRepository(RefreshTokenEntity).createQueryBuilder()
                 .update(RefreshTokenEntity)
                 .set({ revokedAt: new Date() })
                 .where('"user_id" = :userId', { userId: targetUserId })
                 .andWhere('"revoked_at" IS NULL')
                 .execute();
+            for (const session of families) await sessionLifecycleService.record({
+                eventKey: `SESSION_REVOKED:${session.family_id}`,
+                userId: targetUserId,
+                sessionId: session.family_id,
+                eventType: "SESSION_REVOKED",
+                correlationId: requestId,
+                details: { reason: "admin_revoked_all_sessions" },
+            }, manager);
             await auditService.record({
                 actorUserId, action: "user.sessions_revoked", resourceType: "user",
                 resourceId: targetUserId, requestId,

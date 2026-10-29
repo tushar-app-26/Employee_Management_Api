@@ -615,6 +615,19 @@
         "tags": [
           "Employees"
         ],
+        "parameters": [
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "description": "Optional key for safely retrying this employee-creation request. Reuse it only with the same request body.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200
+            }
+          }
+        ],
         "responses": {
           "201": {
             "description": "Employee created successfully",
@@ -1687,6 +1700,21 @@
         ]
       }
     },
+    "/api/v1/auth/sessions/history": {
+      "get": {
+        "summary": "Get session history for the current user",
+        "tags": ["Auth"],
+        "security": [{"bearerAuth": []}],
+        "parameters": [
+          {"name": "page", "in": "query", "schema": {"type": "integer", "minimum": 1, "default": 1}},
+          {"name": "limit", "in": "query", "schema": {"type": "integer", "minimum": 1, "maximum": 100, "default": 20}}
+        ],
+        "responses": {
+          "200": {"description": "The authenticated user's own lifecycle events"},
+          "401": {"description": "Missing or invalid access token"}
+        }
+      }
+    },
     "/api/v1/auth/sessions/{id}": {
       "parameters": [
         {
@@ -2039,6 +2067,19 @@
         }
       }
     },
+    "/api/v1/admin/session-metrics": {
+      "get": {
+        "summary": "Get session lifecycle metrics",
+        "description": "Requires the session:metrics permission, granted to administrators by migration.",
+        "tags": ["Admin"],
+        "security": [{"bearerAuth": []}],
+        "responses": {
+          "200": {"description": "Recent aggregate totals, daily summaries, and runtime counters"},
+          "401": {"description": "Missing or invalid access token"},
+          "403": {"description": "Permission denied"}
+        }
+      }
+    },
     "/api/v1/users/{id}/access": {
       "parameters": [
         {
@@ -2135,6 +2176,17 @@
         ],
         "parameters": [
           {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "description": "Optional key for safely retrying this upload. Reuse it only with the same file and employee.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200
+            }
+          },
+          {
             "name": "id",
             "in": "path",
             "required": true,
@@ -2162,6 +2214,9 @@
           },
           "404": {
             "description": "Employee or document not found"
+          },
+          "429": {
+            "description": "User exceeded the configured document download-link limit"
           },
           "413": {
             "description": "File exceeds configured limit"

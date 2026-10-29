@@ -10,6 +10,9 @@ import { listActiveSessions, refreshTokenRepository } from "../repositories/refr
 import type { PaginationQuery } from "../validators/pagination.validator.js";
 import { RefreshTokenEntity } from "../entities/refresh-token.entity.js";
 import { UserEntity } from "../entities/user.entity.js";
+import { sessionService } from "./session.service.js";
+import { redisCoordinationService } from "./redis-coordination.service.js";
+import { sessionLifecycleService } from "./session-lifecycle.service.js";
 
 import type {
     RegisterInput,
@@ -69,7 +72,7 @@ export class AuthService {
 
         await refreshTokenRepository.save(record);
 
-        return token;
+        return { token, expiresAt };
     }
 
     async register(input: RegisterInput): Promise<void> {
@@ -98,49 +101,123 @@ export class AuthService {
         }
     }
 
-    async login(input: LoginInput) {
-        const email = input.email.toLowerCase();
 
-        const user = await userRepository
-            .createQueryBuilder("user")
-            .addSelect("user.passwordHash")
-            .where("user.email = :email", { email })
-            .getOne();
+async login(input: LoginInput, correlationId?: string) {
+    const email = input.email.toLowerCase();
 
-        const passwordHash = user?.passwordHash ?? DUMMY_PASSWORD_HASH;
-        const passwordMatches = await bcrypt.compare(input.password, passwordHash);
+    const user = await userRepository
+        .createQueryBuilder("user")
+        .addSelect("user.passwordHash")
+        .where("user.email = :email", { email })
+        .getOne();
 
-        if (!user || !user.isActive || !passwordMatches) {
-            throw new AppError(401, "Invalid email or password");
-        }
+    const failureIdentity = user?.id
+        ?? createHash("sha256").update(email).digest("hex");
+    const failureKey = `login-failures:${failureIdentity}`;
+    const failedAttempts = await redisCoordinationService.getCounter(failureKey);
 
-        const familyId = randomUUID();
-        const refreshToken = await this.createRefreshToken(user.id, familyId);
-        const accessToken = this.createAccessToken(user, familyId);
-
-        return {
-            user: {
-                id: user.id,
-                firstName: user.firstName,
-                lastName: user.lastName,
-                email: user.email,
-                role: user.role,
-            },
-            accessToken,
-            refreshToken,
-            tokenType: "Bearer",
-            expiresIn: ACCESS_TOKEN_SECONDS,
-            refreshTokenExpiresIn: REFRESH_TOKEN_DAYS * 24 * 60 * 60,
-        };
+    if (failedAttempts !== undefined && failedAttempts >= config.LOGIN_FAILURE_LIMIT) {
+        throw new AppError(
+            429,
+            "Too many failed login attempts. Try again later.",
+            "LOGIN_TEMPORARILY_LOCKED",
+        );
     }
 
-    async refresh(token: string) {
+    const passwordHash = user?.passwordHash ?? DUMMY_PASSWORD_HASH;
+    const passwordMatches = await bcrypt.compare(
+        input.password,
+        passwordHash,
+    );
+
+    if (!user || !user.isActive || !passwordMatches) {
+        await redisCoordinationService.incrementLoginFailureCounter(
+            failureKey,
+            config.LOGIN_FAILURE_TTL_SECONDS,
+            config.LOGIN_FAILURE_LIMIT,
+        );
+        throw new AppError(401, "Invalid email or password");
+    }
+
+    await redisCoordinationService.deleteKey(failureKey);
+
+    const familyId = randomUUID();
+
+    const refreshTokenRecord = await this.createRefreshToken(
+        user.id,
+        familyId,
+    );
+    const refreshToken = refreshTokenRecord.token;
+
+    const accessToken = this.createAccessToken(
+        user,
+        familyId,
+    );
+
+    try {
+        await sessionService.create(
+            familyId,
+            user.id,
+            REFRESH_TOKEN_DAYS * 24 * 60 * 60,
+            refreshTokenRecord.expiresAt,
+        );
+        const tokenHash = this.hashToken(refreshToken);
+        await sessionService.storeRefreshTokenMetadata({
+            tokenHash,
+            userId: user.id,
+            sessionId: familyId,
+            expiresAt: refreshTokenRecord.expiresAt,
+        });
+        await sessionLifecycleService.record({
+            eventKey: `SESSION_CREATED:${familyId}`,
+            userId: user.id,
+            sessionId: familyId,
+            eventType: "SESSION_CREATED",
+            correlationId,
+        });
+    } catch (error) {
+        // Do not leave a valid refresh token if Redis session creation fails.
+        await refreshTokenRepository
+            .createQueryBuilder()
+            .update(RefreshTokenEntity)
+            .set({ revokedAt: new Date() })
+            .where('"family_id" = :familyId', { familyId })
+            .andWhere('"revoked_at" IS NULL')
+            .execute();
+        await sessionService.removeSafely([familyId]);
+
+        throw error;
+    }
+
+    return {
+        user: {
+            id: user.id,
+            firstName: user.firstName,
+            lastName: user.lastName,
+            email: user.email,
+            role: user.role,
+        },
+        accessToken,
+        refreshToken,
+        tokenType: "Bearer",
+        expiresIn: ACCESS_TOKEN_SECONDS,
+        refreshTokenExpiresIn:
+            REFRESH_TOKEN_DAYS * 24 * 60 * 60,
+    };
+}
+
+
+    async refresh(token: string, correlationId?: string) {
         const tokenHash = this.hashToken(token);
         const replacementToken = randomBytes(48).toString("base64url");
         const replacementExpiry = new Date(
             Date.now() + REFRESH_TOKEN_DAYS * 24 * 60 * 60 * 1000,
         );
 
+        let invalidatedFamilyId: string | null = null;
+        let revokedAt: Date | null = null;
+        let refreshedFamilyId: string | null = null;
+        let refreshedUserId: string | null = null;
         const refreshed = await AppDataSource.transaction(async (manager) => {
             const repository = manager.getRepository(RefreshTokenEntity);
             const existing = await repository.findOne({
@@ -152,10 +229,7 @@ export class AuthService {
                 return null;
             }
 
-            if (
-                existing.revokedAt ||
-                existing.expiresAt.getTime() <= Date.now()
-            ) {
+            if (existing.revokedAt) {
                 // Reuse of a rotated/revoked token revokes the remaining
                 // active token in that login session (token family).
                 await repository
@@ -165,8 +239,19 @@ export class AuthService {
                     .where('"family_id" = :familyId', { familyId: existing.familyId })
                     .andWhere('"revoked_at" IS NULL')
                     .execute();
+                invalidatedFamilyId = existing.familyId;
+                revokedAt = new Date();
+                await sessionLifecycleService.record({
+                    eventKey: `REFRESH_TOKEN_REUSE_DETECTED:${existing.familyId}:${tokenHash}`,
+                    userId: existing.userId,
+                    sessionId: existing.familyId,
+                    eventType: "REFRESH_TOKEN_REUSE_DETECTED",
+                    correlationId,
+                    details: { tokenHashPrefix: tokenHash.slice(0, 12) },
+                }, manager);
                 return null;
             }
+            if (existing.expiresAt.getTime() <= Date.now()) return null;
 
             existing.revokedAt = new Date();
             await repository.save(existing);
@@ -177,6 +262,12 @@ export class AuthService {
             if (!user || !user.isActive) {
                 throw new AppError(401, "Invalid or expired refresh token");
             }
+
+            if (!(await sessionService.exists(existing.familyId, existing.userId))) {
+                throw new AppError(401, "Invalid or expired refresh token");
+            }
+            refreshedFamilyId = existing.familyId;
+            refreshedUserId = existing.userId;
 
             const replacement = repository.create({
                 userId: existing.userId,
@@ -197,13 +288,55 @@ export class AuthService {
         });
 
         if (!refreshed) {
+            if (invalidatedFamilyId && revokedAt) {
+                await sessionService.markRefreshTokenRevoked(tokenHash, revokedAt).catch(() => undefined);
+            }
+            if (invalidatedFamilyId) {
+                await sessionService.removeSafely([invalidatedFamilyId]);
+            }
             throw new AppError(401, "Invalid or expired refresh token");
+        }
+
+        try {
+            await sessionService.markRefreshTokenRevoked(tokenHash, new Date());
+            await sessionService.storeRefreshTokenMetadata({
+                tokenHash: this.hashToken(refreshed.refreshToken),
+                userId: refreshedUserId!,
+                sessionId: refreshedFamilyId!,
+                expiresAt: replacementExpiry,
+            });
+            await sessionService.extend(refreshedFamilyId!, replacementExpiry);
+        } catch (error) {
+            await AppDataSource.transaction(async (manager) => {
+                await manager.getRepository(RefreshTokenEntity).createQueryBuilder()
+                    .update(RefreshTokenEntity)
+                    .set({ revokedAt: new Date() })
+                    .where('"family_id" = :familyId', { familyId: refreshedFamilyId })
+                    .andWhere('"revoked_at" IS NULL')
+                    .execute();
+                await sessionLifecycleService.record({
+                    eventKey: `SESSION_REVOKED:${refreshedFamilyId}`,
+                    userId: refreshedUserId,
+                    sessionId: refreshedFamilyId!,
+                    eventType: "SESSION_REVOKED",
+                    correlationId,
+                    details: { reason: "refresh_rotation_store_failure" },
+                }, manager);
+            }).catch((auditError: unknown) => {
+                console.error("Could not persist session revocation after refresh-store failure", {
+                    sessionId: refreshedFamilyId,
+                    correlationId,
+                    error: auditError,
+                });
+            });
+            await sessionService.removeSafely([refreshedFamilyId!]);
+            throw error;
         }
 
         return refreshed;
     }
 
-    async logout(token: string) {
+    async logout(token: string, correlationId?: string) {
         const tokenHash = this.hashToken(token);
 
         const existing = await refreshTokenRepository.findOneBy({
@@ -211,23 +344,34 @@ export class AuthService {
         });
 
         if (existing) {
-            await refreshTokenRepository
-                .createQueryBuilder()
-                .update(RefreshTokenEntity)
-                .set({ revokedAt: new Date() })
-                .where('"family_id" = :familyId', { familyId: existing.familyId })
-                .andWhere('"revoked_at" IS NULL')
-                .execute();
+            await AppDataSource.transaction(async (manager) => {
+                await manager.getRepository(RefreshTokenEntity)
+                    .createQueryBuilder()
+                    .update(RefreshTokenEntity)
+                    .set({ revokedAt: new Date() })
+                    .where('"family_id" = :familyId', { familyId: existing.familyId })
+                    .andWhere('"revoked_at" IS NULL')
+                    .execute();
+                await sessionLifecycleService.record({
+                    eventKey: `LOGOUT:${existing.familyId}`,
+                    userId: existing.userId,
+                    sessionId: existing.familyId,
+                    eventType: "LOGOUT",
+                    correlationId,
+                }, manager);
+            });
+            await sessionService.markRefreshTokenRevoked(tokenHash, new Date()).catch(() => undefined);
+            await sessionService.removeSafely([existing.familyId]);
         }
 
         return { loggedOut: true };
     }
 
-    async logoutAll(userId: string) {
-        const revokedSessions = await AppDataSource.transaction(async (manager) => {
+    async logoutAll(userId: string, correlationId?: string) {
+        const result = await AppDataSource.transaction(async (manager) => {
             const repository = manager.getRepository(RefreshTokenEntity);
-            const active: Array<{ count: string }> = await repository.query(
-                `SELECT COUNT(DISTINCT family_id)::text AS count
+            const active: Array<{ family_id: string }> = await repository.query(
+                `SELECT DISTINCT family_id
                  FROM refresh_tokens
                  WHERE user_id = $1 AND revoked_at IS NULL AND expires_at > NOW()`,
                 [userId],
@@ -238,17 +382,33 @@ export class AuthService {
                 .where('"user_id" = :userId', { userId })
                 .andWhere('"revoked_at" IS NULL')
                 .execute();
-            return Number(active[0]?.count ?? 0);
+            for (const row of active) {
+                await sessionLifecycleService.record({
+                    eventKey: `LOGOUT:${row.family_id}`,
+                    userId,
+                    sessionId: row.family_id,
+                    eventType: "LOGOUT",
+                    correlationId,
+                }, manager);
+            }
+            return { familyIds: active.map((row) => row.family_id), revokedSessions: active.length };
         });
 
-        return { revokedSessions };
+        await sessionService.removeSafely(result.familyIds);
+        return { revokedSessions: result.revokedSessions };
     }
 
     async getActiveSessions(userId: string, pagination: PaginationQuery) {
         return listActiveSessions(userId, pagination.page, pagination.limit);
     }
 
-    async getActiveSession(userId: string, sessionId: string) {
+    async getSessionHistory(userId: string, pagination: PaginationQuery) {
+        return sessionLifecycleService.getUserHistory(userId, pagination.page, pagination.limit);
+    }
+
+    async getActiveSession(userId: string, sessionFamilyId: string) {
+        // The API's session `id` is the refresh-token family ID. The
+        // refresh_tokens primary key identifies an individual rotation row.
         const sessions = await refreshTokenRepository.query(
             `SELECT family_id AS id,
                     MAX(created_at) AS "createdAt",
@@ -259,26 +419,37 @@ export class AuthService {
                AND revoked_at IS NULL
                AND expires_at > NOW()
              GROUP BY family_id`,
-            [userId, sessionId],
+            [userId, sessionFamilyId],
         );
 
         return sessions[0] ?? null;
     }
 
-    async revokeSession(userId: string, sessionId: string) {
-        const result = await refreshTokenRepository
-            .createQueryBuilder()
-            .update(RefreshTokenEntity)
-            .set({ revokedAt: new Date() })
-            .where('"family_id" = :sessionId', { sessionId })
-            .andWhere('"user_id" = :userId', { userId })
-            .andWhere('"revoked_at" IS NULL')
-            .execute();
-
-        return (result.affected ?? 0) > 0;
+    async revokeSession(userId: string, sessionFamilyId: string, correlationId?: string) {
+        const revoked = await AppDataSource.transaction(async (manager) => {
+            const result = await manager.getRepository(RefreshTokenEntity)
+                .createQueryBuilder()
+                .update(RefreshTokenEntity)
+                .set({ revokedAt: new Date() })
+                .where('"family_id" = :sessionFamilyId', { sessionFamilyId })
+                .andWhere('"user_id" = :userId', { userId })
+                .andWhere('"revoked_at" IS NULL')
+                .execute();
+            const wasRevoked = (result.affected ?? 0) > 0;
+            if (wasRevoked) await sessionLifecycleService.record({
+                eventKey: `SESSION_REVOKED:${sessionFamilyId}`,
+                userId,
+                sessionId: sessionFamilyId,
+                eventType: "SESSION_REVOKED",
+                correlationId,
+            }, manager);
+            return wasRevoked;
+        });
+        if (revoked) await sessionService.removeSafely([sessionFamilyId]);
+        return revoked;
     }
 
-    async changePassword(userId: string, input: ChangePasswordInput) {
+    async changePassword(userId: string, input: ChangePasswordInput, correlationId?: string) {
         const user = await userRepository
             .createQueryBuilder("user")
             .addSelect("user.passwordHash")
@@ -295,8 +466,13 @@ export class AuthService {
 
         user.passwordHash = await bcrypt.hash(input.newPassword, 12);
 
-        await AppDataSource.transaction(async (manager) => {
+        const familyIds = await AppDataSource.transaction(async (manager) => {
             await manager.getRepository(UserEntity).save(user);
+            const active: Array<{ family_id: string }> = await manager.query(
+                `SELECT DISTINCT family_id FROM refresh_tokens
+                 WHERE user_id = $1 AND revoked_at IS NULL`,
+                [userId],
+            );
             await manager
                 .getRepository(RefreshTokenEntity)
                 .createQueryBuilder()
@@ -305,7 +481,17 @@ export class AuthService {
                 .where('"user_id" = :userId', { userId })
                 .andWhere('"revoked_at" IS NULL')
                 .execute();
+            for (const row of active) await sessionLifecycleService.record({
+                eventKey: `SESSION_REVOKED:${row.family_id}`,
+                userId,
+                sessionId: row.family_id,
+                eventType: "SESSION_REVOKED",
+                correlationId,
+                details: { reason: "password_changed" },
+            }, manager);
+            return active.map((row) => row.family_id);
         });
+        await sessionService.removeSafely(familyIds);
 
         return { passwordChanged: true, sessionsRevoked: true };
     }

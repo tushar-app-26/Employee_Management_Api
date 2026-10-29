@@ -26,7 +26,7 @@ export class AuthController {
         next: NextFunction,
     ) {
         try {
-            const result = await authService.login(req.body);
+            const result = await authService.login(req.body, res.locals.requestId as string | undefined);
 
             return ApiResponse.send(
                 res,
@@ -45,7 +45,7 @@ export class AuthController {
         next: NextFunction,
     ) {
         try {
-            const result = await authService.refresh(req.body.refreshToken);
+            const result = await authService.refresh(req.body.refreshToken, res.locals.requestId as string | undefined);
 
             return ApiResponse.send(
                 res,
@@ -64,7 +64,7 @@ export class AuthController {
         next: NextFunction,
     ) {
         try {
-            const result = await authService.logout(req.body.refreshToken);
+            const result = await authService.logout(req.body.refreshToken, res.locals.requestId as string | undefined);
 
             return ApiResponse.send(
                 res,
@@ -83,7 +83,7 @@ export class AuthController {
         next: NextFunction,
     ) {
         try {
-            const result = await authService.logoutAll(req.auth!.sub);
+            const result = await authService.logoutAll(req.auth!.sub, res.locals.requestId as string | undefined);
             return ApiResponse.send(res, 200, "All sessions revoked", result);
         } catch (error) {
             return next(error);
@@ -101,6 +101,22 @@ export class AuthController {
                 res.locals.validatedQuery as PaginationQuery,
             );
             return ApiResponse.send(res, 200, "Active sessions fetched successfully", result);
+        } catch (error) {
+            return next(error);
+        }
+    }
+
+    async sessionHistory(
+        req: Request,
+        res: Response,
+        next: NextFunction,
+    ) {
+        try {
+            const result = await authService.getSessionHistory(
+                req.auth!.sub,
+                res.locals.validatedQuery as PaginationQuery,
+            );
+            return ApiResponse.send(res, 200, "Session history fetched successfully", result);
         } catch (error) {
             return next(error);
         }
@@ -134,6 +150,7 @@ export class AuthController {
             const revoked = await authService.revokeSession(
                 req.auth!.sub,
                 req.params.id as string,
+                res.locals.requestId as string | undefined,
             );
             if (!revoked) {
                 return ApiResponse.send(res, 404, "Session not found", null);
@@ -150,7 +167,7 @@ export class AuthController {
         next: NextFunction,
     ) {
         try {
-            const result = await authService.changePassword(req.auth!.sub, req.body);
+            const result = await authService.changePassword(req.auth!.sub, req.body, res.locals.requestId as string | undefined);
             return ApiResponse.send(res, 200, "Password changed successfully", result);
         } catch (error) {
             return next(error);

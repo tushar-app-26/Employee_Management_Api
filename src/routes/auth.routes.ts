@@ -52,6 +52,13 @@ router.get(
 );
 
 router.get(
+    "/sessions/history",
+    authenticate,
+    validateRequest(paginationQuerySchema, "query"),
+    authController.sessionHistory.bind(authController),
+);
+
+router.get(
     "/sessions/:id",
     authenticate,
     validateRequest(sessionIdSchema, "params"),

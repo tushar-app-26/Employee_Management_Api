@@ -4,8 +4,8 @@ dotenv.config({ path: ".env.test", override: true });
 
 // Keep ordinary integration requests below the app's in-memory limiter. The
 // dedicated rate-limit test loads an isolated app instance with a limit of 1.
-process.env.AUTH_RATE_LIMIT_MAX_REQUESTS = "100";
-process.env.RATE_LIMIT_MAX_REQUESTS = "100";
+process.env.AUTH_RATE_LIMIT_MAX_REQUESTS = "1000";
+process.env.RATE_LIMIT_MAX_REQUESTS = "1000";
 process.env.DOCUMENT_STORAGE_DIR = "var/test-private-documents";
 process.env.DOCUMENT_STORAGE_DRIVER = "local";
 

@@ -12,13 +12,15 @@ import { requestIdMiddleware } from "./middlewares/request-id.js";
 import { ApiResponse } from "./utils/api-response.js";
 import { errorHandler } from "./errors/error-handler.js";
 import { AppError } from "./errors/app-error.js";
-import { checkDatabaseReadiness } from "./config/database.js";
+import { checkDatabaseReadiness, checkRedisReadiness } from "./config/database.js";
 import { createRateLimitStore } from "./config/rate-limit-store.js";
 import employeeRoutes from "./routes/employee.routes.js";
 import departmentRoutes from "./routes/department.routes.js";
 import authRoutes from "./routes/auth.routes.js";
 import userRoutes from "./routes/user.routes.js";
 import documentRoutes from "./routes/document.routes.js";
+import adminRoutes from "./routes/admin.routes.js";
+import { sessionLifecycleService } from "./services/session-lifecycle.service.js";
 const app = express();
 const authRateLimitStore = createRateLimitStore("employee-api:auth:");
 const apiRateLimitStore = createRateLimitStore("employee-api:api:");
@@ -89,6 +91,7 @@ app.use("/api/v1/departments", departmentRoutes);
 app.use("/api/v1/auth", authRoutes);
 app.use("/api/v1/users", userRoutes);
 app.use("/api/v1/documents", documentRoutes);
+app.use("/api/v1/admin", adminRoutes);
 
 // Liveness only reports whether the HTTP process is running.
 app.get("/health/live", (_req, res) => {
@@ -105,16 +108,30 @@ app.get("/health", (_req, res) => {
     return ApiResponse.send(res, 200, "Service is alive", { status: "alive" });
 });
 
-// Readiness confirms the API can reach PostgreSQL before receiving traffic.
+// Readiness checks both the database and the required session/revocation store.
 app.get("/health/ready", async (_req, res, next) => {
     try {
         await checkDatabaseReadiness();
-        return ApiResponse.send(res, 200, "Service is ready", { status: "ready" });
     } catch (error) {
         return next(new AppError(
             503,
             "Database is not ready",
             "DATABASE_UNAVAILABLE",
+            { cause: error },
+        ));
+    }
+    try {
+        await checkRedisReadiness();
+        return ApiResponse.send(res, 200, "Service is ready", {
+            status: "ready",
+            dependencies: { postgres: "ready", redis: "ready" },
+            sessionLifecycle: sessionLifecycleService.getHealth(),
+        });
+    } catch (error) {
+        return next(new AppError(
+            503,
+            "A required service is not ready",
+            "REDIS_UNAVAILABLE",
             { cause: error },
         ));
     }

@@ -27,6 +27,7 @@ const configSchema = z.object({
     JWT_SECRET: z
         .string()
         .min(32, "JWT_SECRET must be at least 32 characters"),
+    JWT_CLOCK_TOLERANCE_SECONDS: z.coerce.number().int().min(0).max(5).default(0),
 
     JWT_ACCESS_TTL: z.string()
         .regex(/^[1-9]\d*[sm]$/)
@@ -53,7 +54,12 @@ const configSchema = z.object({
         .positive()
         .default(30),
 
-    AUTH_RATE_LIMIT_MAX_REQUESTS: z.coerce.number().int().positive().max(100).default(10),
+    AUTH_RATE_LIMIT_MAX_REQUESTS: z.coerce.number().int().positive().max(1000).default(10),
+    LOGIN_FAILURE_LIMIT: z.coerce.number().int().positive().max(100).default(5),
+    LOGIN_FAILURE_TTL_SECONDS: z.coerce.number().int().positive().max(86400).default(900),
+    DOCUMENT_LINK_LIMIT: z.coerce.number().int().positive().max(1000).default(10),
+    DOCUMENT_LINK_WINDOW_SECONDS: z.coerce.number().int().positive().max(3600).default(60),
+    IDEMPOTENCY_TTL_SECONDS: z.coerce.number().int().positive().max(86400).default(600),
     AUDIT_LOG_RETENTION_DAYS: z.coerce.number().int().positive().default(365),
     INACTIVE_EMPLOYEE_REVIEW_DAYS: z.coerce.number().int().positive().default(2555),
     DOCUMENT_STORAGE_DIR: z.string().min(1).default("var/private-documents"),
@@ -66,6 +72,9 @@ const configSchema = z.object({
     S3_PRESIGNED_URL_TTL_SECONDS: z.coerce.number().int().min(30).max(3600).default(300),
     S3_REQUEST_TIMEOUT_MS: z.coerce.number().int().min(100).max(30000).default(5000),
     REDIS_URL: z.string().default(""),
+    REDIS_USERNAME: z.string().optional(),
+    REDIS_PASSWORD: z.string().optional(),
+    REDIS_TLS: z.enum(["true", "false"]).default("false").transform((value) => value === "true"),
     REDIS_CONNECT_TIMEOUT_MS: z.coerce.number().int().min(100).max(30000).default(5000),
     REDIS_RETRY_ATTEMPTS: z.coerce.number().int().min(1).max(10).default(5),
     REDIS_RETRY_BASE_DELAY_MS: z.coerce.number().int().min(10).max(5000).default(200),

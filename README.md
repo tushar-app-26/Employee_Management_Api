@@ -52,6 +52,12 @@ A versioned REST API for managing employees and departments. It is built with No
 - `npm run retention:report` — count inactive employee records past the review interval; does not delete employee data.
 - `npm run audit:prune` — delete audit records older than `AUDIT_LOG_RETENTION_DAYS`; run only under the approved retention policy.
 
+## Employee scheduled jobs
+
+The server starts two `node-cron` jobs after PostgreSQL initializes: `0 * * * *` logs Engineering employees once per hour, and `*/15 * * * *` logs employees with missing phone numbers every 15 minutes. Both schedules use UTC. Entries are written to `audit_logs` with the employee UUID as `resource_id`; a database uniqueness index prevents duplicate entries for the same employee and scheduled run while allowing later runs to log them again. Apply migrations with `npm run migration:run` before deploying the jobs.
+
+To verify the latest entries, query `audit_logs` for the actions `Engineering employee detected` and `Employee phone number missing`. The associated `created_at` column is populated by PostgreSQL.
+
 ## Architecture and resilience documentation
 
 - [High-level and low-level design](docs/hld-lld.md) includes the component diagram, module contracts, ERD, and API error types.
@@ -101,7 +107,9 @@ For protected employee endpoints, send `Authorization: Bearer <accessToken>`. Re
 | POST | `/api/v1/auth/logout` | Revoke the refresh-token session supplied in the request body. |
 | POST | `/api/v1/auth/logout-all` | Revoke all refresh sessions for the logged-in user. |
 | GET | `/api/v1/auth/sessions` | List the logged-in user’s active sessions. |
+| GET | `/api/v1/auth/sessions/history` | View the logged-in user’s own session lifecycle history. |
 | DELETE | `/api/v1/auth/sessions/:id` | Revoke one session belonging to the logged-in user. |
+| GET | `/api/v1/admin/session-metrics` | Administrator-only session audit totals and runtime counters. |
 | POST | `/api/v1/auth/change-password` | Verify current password, set a new password, and revoke refresh sessions. |
 
 Refresh/logout body:
@@ -110,7 +118,9 @@ Refresh/logout body:
 { "refreshToken": "<refresh-token-from-login>" }
 ```
 
-Access tokens default to 15 minutes (`JWT_ACCESS_TTL`, maximum one hour) and are bound to a refresh-token session family. Refresh tokens default to 7 days (`REFRESH_TOKEN_TTL_DAYS`) and are stored in the database as SHA-256 hashes, not plaintext. Refresh rotations retain a session family ID; reusing a rotated/revoked token revokes the remaining tokens in that family. Password changes, role changes, account deactivation, and explicit logout revoke refresh sessions and invalidate access tokens on the next request. Protected requests check the current account status and role in PostgreSQL.
+Access tokens default to 15 minutes (`JWT_ACCESS_TTL`, maximum one hour) and are bound to a refresh-token session family. Refresh tokens default to 7 days (`REFRESH_TOKEN_TTL_DAYS`) and are stored in PostgreSQL as SHA-256 hashes, not plaintext. Redis holds session state and refresh-token hash metadata with TTLs matching their remaining validity. Refresh rotations retain a session family ID; reusing a rotated/revoked token revokes the remaining tokens in that family. Password changes, role changes, account deactivation, and explicit logout revoke refresh sessions and invalidate access tokens on the next request. Protected requests verify the JWT and then check Redis session state plus current account/family status in PostgreSQL. Redis failure is closed with a controlled service-unavailable response; it never bypasses revocation checks.
+
+Session expiry/revocation audit behavior, Redis key prefixes and TTLs, key-expiry notifications, reconciliation, local Redis setup, and the trade-offs between JWT expiry and server-side revocation are documented in [docs/redis-session-audit.md](docs/redis-session-audit.md).
 
 Refresh tokens are returned in the login response and submitted in the JSON body to refresh/logout endpoints. This bearer-token design requires clients to keep refresh tokens in protected platform storage; do not put them in URLs, logs, or browser local storage. A browser client should use a carefully designed HttpOnly cookie plus CSRF protections instead.
 
