@@ -8,6 +8,7 @@ A versioned REST API for managing employees and departments. It is built with No
 - PostgreSQL
 - A private S3 bucket for the default document-storage configuration
 - Redis for shared production rate limits (optional in local development)
+- An SMTP account for production email verification
 - A database with the required project schema/migrations applied
 
 ## Setup
@@ -18,7 +19,7 @@ A versioned REST API for managing employees and departments. It is built with No
    npm install
    ```
 
-2. Copy `.env.example` to `.env` and set your PostgreSQL connection string, private JWT secret of at least 32 characters, AWS region and private S3 bucket. Set AWS access keys or use the AWS SDK's workload credentials. Do not commit `.env` or share its values. Set `REDIS_URL` when using Redis locally; production requires it.
+2. Copy `.env.example` to `.env` and set your PostgreSQL connection string, private JWT secret of at least 32 characters, AWS region and private S3 bucket. Set AWS access keys or use the AWS SDK's workload credentials. Set `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASSWORD`, `EMAIL_FROM`, and `PUBLIC_API_URL` when testing email verification with a mail provider. Without SMTP, development logs a verification link. Do not commit `.env` or share its values. Set `REDIS_URL` when using Redis locally; production requires it. Set `TRUST_PROXY_HOPS` to the exact trusted proxy hop count when deployed behind a load balancer.
 
 3. Create an empty PostgreSQL database. TypeORM schema synchronization and automatic migration execution are disabled (`synchronize: false`, `migrationsRun: false`). Apply the TypeORM migrations:
 
@@ -95,7 +96,9 @@ For protected employee endpoints, send `Authorization: Bearer <accessToken>`. Re
 
 | Method | Path | Purpose |
 |---|---|---|
-| POST | `/api/v1/auth/register` | Create a login account with first/last name, email, and password; role is assigned as `employee`. |
+| POST | `/api/v1/auth/register` | Create an unverified employee-role login account and send an email verification link. |
+| GET | `/api/v1/auth/verify-email?token=...` | Open a confirmation page; the user must press Verify to confirm mailbox ownership. |
+| POST | `/api/v1/auth/verify-email` | Consume a verification token and enable login for the account. |
 | POST | `/api/v1/auth/login` | Verify credentials and return an access token and refresh token. |
 | POST | `/api/v1/auth/refresh` | Exchange a valid refresh token for a new access/refresh token pair. The submitted token is revoked as part of the exchange. |
 | POST | `/api/v1/auth/logout` | Revoke the refresh-token session supplied in the request body. |
@@ -110,7 +113,7 @@ Refresh/logout body:
 { "refreshToken": "<refresh-token-from-login>" }
 ```
 
-Access tokens default to 15 minutes (`JWT_ACCESS_TTL`, maximum one hour) and are bound to a refresh-token session family. Refresh tokens default to 7 days (`REFRESH_TOKEN_TTL_DAYS`) and are stored in the database as SHA-256 hashes, not plaintext. Refresh rotations retain a session family ID; reusing a rotated/revoked token revokes the remaining tokens in that family. Password changes, role changes, account deactivation, and explicit logout revoke refresh sessions and invalidate access tokens on the next request. Protected requests check the current account status and role in PostgreSQL.
+Access tokens default to 15 minutes (`JWT_ACCESS_TTL`, maximum one hour) and are bound to a refresh-token session family. Refresh tokens default to 7 days (`REFRESH_TOKEN_TTL_DAYS`) and are stored in the database as SHA-256 hashes, not plaintext. During `REFRESH_TOKEN_REPLAY_GRACE_SECONDS`, a concurrent retry of a rotated token receives the same replacement token; later reuse revokes the remaining tokens in that family. Old refresh-token rows are removed after `REFRESH_TOKEN_RETENTION_DAYS`. Password changes, role changes, account deactivation, and explicit logout revoke refresh sessions and invalidate access tokens on the next request. Login, logout, and password changes are recorded in `audit_logs`.
 
 Refresh tokens are returned in the login response and submitted in the JSON body to refresh/logout endpoints. This bearer-token design requires clients to keep refresh tokens in protected platform storage; do not put them in URLs, logs, or browser local storage. A browser client should use a carefully designed HttpOnly cookie plus CSRF protections instead.
 
@@ -147,7 +150,7 @@ Registration body:
 }
 ```
 
-Registration always assigns role `employee`; clients must not send `role` or `employeeId`. After logging in as HR/admin, call `GET /api/v1/users/unlinked-employees`, choose the registered account `id`, then create its job profile:
+Registration always assigns role `employee`; clients must not send `role` or `employeeId`. The account cannot log in or be linked to an employee profile until the owner verifies the email. HR/admin must link an account only when its verified email matches the employee's `workEmail`. After verification and logging in as HR/admin, call `GET /api/v1/users/unlinked-employees`, choose the registered account `id`, then create its job profile:
 
 ```json
 {

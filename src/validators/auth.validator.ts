@@ -32,6 +32,10 @@ export const refreshTokenSchema = z.object({
     refreshToken: z.string().min(1, "Refresh token is required"),
 });
 
+export const verifyEmailSchema = z.object({
+    token: z.string().min(32).max(256),
+}).strict();
+
 export const logoutSchema = z.object({
     refreshToken: z.string().min(1, "Refresh token is required"),
 });

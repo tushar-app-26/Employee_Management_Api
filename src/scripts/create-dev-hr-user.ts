@@ -52,6 +52,7 @@ async function createDevelopmentHrUser(): Promise<void> {
             email,
             passwordHash,
             role: "hr",
+            emailVerified: true,
         });
 
         await userRepository.save(user);

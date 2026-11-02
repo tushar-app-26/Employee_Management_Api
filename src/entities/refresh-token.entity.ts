@@ -34,6 +34,12 @@ export class RefreshTokenEntity {
     @Column({ name: "revoked_at", type: "timestamptz", nullable: true })
     revokedAt!: Date | null;
 
+    @Column({ name: "replay_token_ciphertext", type: "text", nullable: true, select: false })
+    replayTokenCiphertext!: string | null;
+
+    @Column({ name: "replay_grace_expires_at", type: "timestamptz", nullable: true, select: false })
+    replayGraceExpiresAt!: Date | null;
+
     @CreateDateColumn({ name: "created_at", type: "timestamptz" })
     createdAt!: Date;
 }

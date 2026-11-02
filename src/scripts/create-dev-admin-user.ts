@@ -28,7 +28,7 @@ async function createDevelopmentAdmin(): Promise<void> {
             return;
         }
         const passwordHash = await bcrypt.hash(password, 12);
-        const user = userRepository.create({ firstName, lastName, email, passwordHash, role: "admin", isActive: true });
+        const user = userRepository.create({ firstName, lastName, email, passwordHash, role: "admin", isActive: true, emailVerified: true });
         await userRepository.save(user);
         console.log(`Development admin account created for ${email}.`);
     } catch {

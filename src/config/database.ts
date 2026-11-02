@@ -7,6 +7,7 @@ import { EmployeeEntity } from "../entities/employee.entity.js";
 import { UserEntity } from "../entities/user.entity.js";
 import { RefreshTokenEntity } from "../entities/refresh-token.entity.js";
 import { EmployeeDocumentEntity } from "../entities/employee-document.entity.js";
+import { logger } from "../utils/logger.js";
 export const AppDataSource = new DataSource({
     type: "postgres",
     url: config.DATABASE_URL,
@@ -28,13 +29,13 @@ export const AppDataSource = new DataSource({
         EmployeeDocumentEntity,
     ],
 
-    // Existing database schema ko automatically change nahi karna.
+    // Do not change the existing database schema automatically.
     synchronize: false,
 
-    // Migrations ko automatically run nahi karna.
+    // Do not run migrations automatically.
     migrationsRun: false,
 
-    // TypeORM migration files ka location.
+    // TypeORM migration file location.
     migrations: ["src/migrations/*.ts"],
 
     // TypeORM query logs can include password hashes and refresh-token hashes
@@ -50,7 +51,7 @@ export async function checkDatabaseConnection(): Promise<void> {
                 await AppDataSource.initialize();
             }
             await AppDataSource.query("SELECT 1");
-            console.log("PostgreSQL connection successful");
+            logger.info("PostgreSQL connection successful");
             return;
         } catch (error) {
             lastError = error;
@@ -62,7 +63,7 @@ export async function checkDatabaseConnection(): Promise<void> {
                 const exponentialDelay = config.DB_RETRY_BASE_DELAY_MS * (2 ** (attempt - 1));
                 const jitter = Math.floor(Math.random() * exponentialDelay);
                 const delayMs = exponentialDelay + jitter;
-                console.warn(`Database connection attempt ${attempt} failed; retrying in ${delayMs} ms`);
+                logger.warn({ attempt, retryDelayMs: delayMs, err: error }, "Database connection attempt failed; retrying");
                 await new Promise((resolvePromise) => setTimeout(resolvePromise, delayMs));
             }
         }

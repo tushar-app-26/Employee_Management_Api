@@ -72,13 +72,14 @@ export class EmployeeService {
         }
 
         if (options.search) {
+            const escapedSearch = options.search.replace(/[\\%_]/g, "\\$&");
             query.andWhere(`(
-                user.first_name ILIKE :search
-                OR user.last_name ILIKE :search
-                OR employee.first_name ILIKE :search
-                OR employee.last_name ILIKE :search
-                OR employee.work_email ILIKE :search
-            )`, { search: `%${options.search}%` });
+                user.first_name ILIKE :search ESCAPE E'\\\\'
+                OR user.last_name ILIKE :search ESCAPE E'\\\\'
+                OR employee.first_name ILIKE :search ESCAPE E'\\\\'
+                OR employee.last_name ILIKE :search ESCAPE E'\\\\'
+                OR employee.work_email ILIKE :search ESCAPE E'\\\\'
+            )`, { search: `%${escapedSearch}%` });
         }
         if (options.departmentId) {
             query.andWhere("employee.departmentId = :departmentId", { departmentId: options.departmentId });
@@ -179,6 +180,10 @@ export class EmployeeService {
             if (!user) throw new AppError(404, "Registered user not found");
             if (user.role !== "employee") throw new AppError(400, "Only employee-role accounts can be linked to an employee profile");
             if (!user.isActive) throw new AppError(400, "Inactive accounts cannot be linked to an employee profile");
+            if (!user.emailVerified) throw new AppError(400, "The employee account email must be verified before linking");
+            if (user.email.toLowerCase() !== input.workEmail.toLowerCase()) {
+                throw new AppError(400, "The verified account email must match the employee work email");
+            }
             if (await employees.findOneBy({ userId: input.userId })) throw new AppError(409, "This user already has an employee profile");
             if (!await departments.findOneBy({ id: input.departmentId })) throw new AppError(404, "Department not found");
             if (input.managerId && !await employees.findOneBy({ id: input.managerId })) throw new AppError(404, "Manager not found");
@@ -192,7 +197,7 @@ export class EmployeeService {
 
             const employee = employees.create({
                 firstName, lastName, userId: user.id, user,
-                workEmail: input.workEmail, phone: input.phone ?? null,
+                workEmail: input.workEmail.toLowerCase(), phone: input.phone ?? null,
                 departmentId: input.departmentId, managerId: input.managerId ?? null,
                 jobTitle: input.jobTitle, joiningDate: input.joiningDate,
             });
@@ -245,6 +250,21 @@ export class EmployeeService {
                 const targetManager = await employees.findOneBy({ id: input.managerId });
                 if (!targetManager) throw new AppError(404, "Manager not found");
                 if (targetManager.id === employee.id) throw new AppError(400, "An employee cannot be their own manager");
+
+                const cycle: Array<{ id: string }> = await manager.query(
+                    `WITH RECURSIVE reports(id) AS (
+                        SELECT id FROM employees WHERE manager_id = $1
+                        UNION
+                        SELECT employee.id
+                        FROM employees employee
+                        INNER JOIN reports ON employee.manager_id = reports.id
+                    )
+                    SELECT id FROM reports WHERE id = $2 LIMIT 1`,
+                    [employee.id, targetManager.id],
+                );
+                if (cycle.length) {
+                    throw new AppError(400, "Manager assignment would create a reporting cycle");
+                }
             }
 
             const { firstName, lastName, ...employmentFields } = input;
@@ -259,13 +279,16 @@ export class EmployeeService {
                 if (lastName !== undefined) employee.lastName = lastName;
             }
             Object.assign(employee, employmentFields);
+            if (employmentFields.workEmail !== undefined) {
+                employee.workEmail = employmentFields.workEmail.toLowerCase();
+            }
             const saved = await employees.save(employee);
             if (saved.user) saved.user = employee.user;
 
             if ((saved.employmentStatus === "inactive" || saved.employmentStatus === "terminated") && saved.userId) {
                 await manager.getRepository(UserEntity).update({ id: saved.userId }, { isActive: false });
                 await manager.getRepository(RefreshTokenEntity).createQueryBuilder()
-                    .update(RefreshTokenEntity).set({ revokedAt: new Date() })
+                    .update(RefreshTokenEntity).set({ revokedAt: new Date(), replayTokenCiphertext: null, replayGraceExpiresAt: null })
                     .where('"user_id" = :userId', { userId: saved.userId })
                     .andWhere('"revoked_at" IS NULL').execute();
             }
@@ -280,14 +303,28 @@ export class EmployeeService {
     async deleteEmployee(id: string, actorUserId?: string, requestId?: string) {
         return AppDataSource.transaction(async (manager) => {
             const employees = manager.getRepository(EmployeeEntity);
-            const employee = await employees.findOneBy({ id });
+            const employee = await employees.findOne({ where: { id }, lock: { mode: "pessimistic_write" } });
             if (!employee) return false;
+            if (employee.userId) {
+                const linkedUser = await manager.getRepository(UserEntity).findOneBy({ id: employee.userId });
+                if (linkedUser?.role === "admin" && linkedUser.isActive) {
+                    if (linkedUser.id === actorUserId) {
+                        throw new AppError(400, "Administrators cannot deactivate their own account");
+                    }
+                    const activeAdmins: Array<{ id: string }> = await manager.query(
+                        "SELECT id FROM users WHERE role_id = 'admin' AND is_active = TRUE FOR UPDATE",
+                    );
+                    if (activeAdmins.length <= 1) {
+                        throw new AppError(400, "The last active administrator cannot be deactivated");
+                    }
+                }
+            }
             employee.employmentStatus = "inactive";
             await employees.save(employee);
             if (employee.userId) {
                 await manager.getRepository(UserEntity).update({ id: employee.userId }, { isActive: false });
                 await manager.getRepository(RefreshTokenEntity).createQueryBuilder()
-                    .update(RefreshTokenEntity).set({ revokedAt: new Date() })
+                    .update(RefreshTokenEntity).set({ revokedAt: new Date(), replayTokenCiphertext: null, replayGraceExpiresAt: null })
                     .where('"user_id" = :userId', { userId: employee.userId })
                     .andWhere('"revoked_at" IS NULL').execute();
             }

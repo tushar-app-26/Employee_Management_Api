@@ -3,6 +3,7 @@ import type { ErrorRequestHandler } from "express";
 import { ApiResponse } from "../utils/api-response.js";
 import { AppError } from "./app-error.js";
 import multer from "multer";
+import { logger } from "../utils/logger.js";
 
 export const errorHandler: ErrorRequestHandler = (
     error,
@@ -21,6 +22,8 @@ export const errorHandler: ErrorRequestHandler = (
     const details = error as {
         type?: unknown;
         code?: unknown;
+        status?: unknown;
+        statusCode?: unknown;
     };
 
     // Custom application errors
@@ -67,6 +70,25 @@ export const errorHandler: ErrorRequestHandler = (
         message = "Invalid JSON request body";
     }
 
+    else if (details.type === "entity.too.large") {
+        statusCode = 413;
+        code = "REQUEST_TOO_LARGE";
+        message = "Request body exceeds the configured size limit";
+    }
+
+    else if (
+        typeof details.status === "number" &&
+        Number.isInteger(details.status) &&
+        details.status >= 400 &&
+        details.status < 500
+    ) {
+        statusCode = details.status;
+        code = statusCode === 413 ? "REQUEST_TOO_LARGE" : "INVALID_REQUEST";
+        message = statusCode === 413
+            ? "Request body exceeds the configured size limit"
+            : "Invalid request";
+    }
+
     // PostgreSQL unique constraint violation
     else if (details.code === "23505") {
         statusCode = 409;
@@ -82,11 +104,13 @@ export const errorHandler: ErrorRequestHandler = (
     }
 
     const requestId = String(res.locals.requestId ?? req.header("x-request-id") ?? "unavailable");
-    console.error("Request failed", {
+    const logData = {
         requestId,
         statusCode,
-        error: serializeError(error),
-    });
+        error: serializeError(error, statusCode >= 500),
+    };
+    if (statusCode >= 500) logger.error(logData, "Request failed");
+    else if (statusCode >= 400) logger.warn(logData, "Request rejected");
 
     return ApiResponse.send(
         res,
@@ -97,7 +121,7 @@ export const errorHandler: ErrorRequestHandler = (
     );
 };
 
-function serializeError(error: unknown, depth = 0): Record<string, unknown> {
+function serializeError(error: unknown, includeStack: boolean, depth = 0): Record<string, unknown> {
     if (depth > 4) return { message: "Error cause depth limit reached" };
     if (!(error instanceof Error)) {
         return { name: "UnknownError", message: String(error) };
@@ -107,9 +131,9 @@ function serializeError(error: unknown, depth = 0): Record<string, unknown> {
     const serialized: Record<string, unknown> = {
         name: error.name,
         message: error.message,
-        stack: error.stack,
     };
+    if (includeStack && error.stack) serialized.stack = error.stack;
     if (typeof errorWithCode.code === "string") serialized.code = errorWithCode.code;
-    if (error.cause !== undefined) serialized.cause = serializeError(error.cause, depth + 1);
+    if (error.cause !== undefined) serialized.cause = serializeError(error.cause, includeStack, depth + 1);
     return serialized;
 }

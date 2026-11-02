@@ -1,11 +1,12 @@
 import bcrypt from "bcrypt";
 import jwt from "jsonwebtoken";
-import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { createCipheriv, createDecipheriv, createHash, randomBytes, randomUUID } from "node:crypto";
 
 import { AppDataSource } from "../config/database.js";
 import { config } from "../config/config.js";
 import { AppError } from "../errors/app-error.js";
 import { userRepository } from "../repositories/user.repository.js";
+import { IsNull, type EntityManager } from "typeorm";
 import { listActiveSessions, refreshTokenRepository } from "../repositories/refresh-token.repository.js";
 import type { PaginationQuery } from "../validators/pagination.validator.js";
 import { RefreshTokenEntity } from "../entities/refresh-token.entity.js";
@@ -16,6 +17,9 @@ import type {
     LoginInput,
     ChangePasswordInput,
 } from "../validators/auth.validator.js";
+import { auditService } from "./audit.service.js";
+import { emailVerificationService } from "./email-verification.service.js";
+import { logger } from "../utils/logger.js";
 
 const accessTtlFactors: Record<string, number> = { s: 1, m: 60, h: 3600, d: 86400 };
 const accessTtl = /^([1-9]\d*)([smhd])$/.exec(config.JWT_ACCESS_TTL)!;
@@ -34,8 +38,34 @@ function isUniqueConstraintViolation(error: unknown): boolean {
 }
 
 export class AuthService {
+    private dispatchVerificationEmail(email: string, token: string): void {
+        void emailVerificationService.send(email, token).catch((deliveryError: unknown) => {
+            logger.error({ email, err: deliveryError }, "Could not send email verification message");
+        });
+    }
+
     private hashToken(token: string): string {
         return createHash("sha256").update(token).digest("hex");
+    }
+
+    private encryptReplayToken(token: string): string {
+        const iv = randomBytes(12);
+        const key = createHash("sha256").update(config.JWT_SECRET).digest();
+        const cipher = createCipheriv("aes-256-gcm", key, iv);
+        const ciphertext = Buffer.concat([cipher.update(token, "utf8"), cipher.final()]);
+        return [iv, cipher.getAuthTag(), ciphertext].map((part) => part.toString("base64url")).join(".");
+    }
+
+    private decryptReplayToken(value: string): string {
+        const [ivValue, tagValue, ciphertextValue] = value.split(".");
+        if (!ivValue || !tagValue || !ciphertextValue) throw new Error("Invalid refresh replay token data");
+        const key = createHash("sha256").update(config.JWT_SECRET).digest();
+        const decipher = createDecipheriv("aes-256-gcm", key, Buffer.from(ivValue, "base64url"));
+        decipher.setAuthTag(Buffer.from(tagValue, "base64url"));
+        return Buffer.concat([
+            decipher.update(Buffer.from(ciphertextValue, "base64url")),
+            decipher.final(),
+        ]).toString("utf8");
     }
 
     private createAccessToken(user: {
@@ -53,13 +83,14 @@ export class AuthService {
         );
     }
 
-    private async createRefreshToken(userId: string, familyId = randomUUID()) {
+    private async createRefreshToken(userId: string, familyId = randomUUID(), manager?: EntityManager) {
         const token = randomBytes(48).toString("base64url");
         const expiresAt = new Date(
             Date.now() + REFRESH_TOKEN_DAYS * 24 * 60 * 60 * 1000,
         );
 
-        const record = refreshTokenRepository.create({
+        const repository = manager?.getRepository(RefreshTokenEntity) ?? refreshTokenRepository;
+        const record = repository.create({
             userId,
             familyId,
             tokenHash: this.hashToken(token),
@@ -67,7 +98,7 @@ export class AuthService {
             revokedAt: null,
         });
 
-        await refreshTokenRepository.save(record);
+        await repository.save(record);
 
         return token;
     }
@@ -79,7 +110,16 @@ export class AuthService {
         const passwordHash = await bcrypt.hash(input.password, 12);
         const existingUser = await userRepository.findOneBy({ email });
 
-        if (existingUser) return;
+        const verificationToken = randomBytes(32).toString("base64url");
+        if (existingUser) {
+            if (!existingUser.emailVerified) {
+                existingUser.emailVerificationTokenHash = this.hashToken(verificationToken);
+                existingUser.emailVerificationExpiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
+                await userRepository.save(existingUser);
+                this.dispatchVerificationEmail(email, verificationToken);
+            }
+            return;
+        }
 
         const user = userRepository.create({
             firstName: input.firstName,
@@ -87,10 +127,14 @@ export class AuthService {
             email,
             passwordHash,
             role: "employee",
+            emailVerified: false,
+            emailVerificationTokenHash: this.hashToken(verificationToken),
+            emailVerificationExpiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
         });
 
         try {
             await userRepository.save(user);
+            this.dispatchVerificationEmail(email, verificationToken);
         } catch (error) {
             // Handle concurrent registrations that race past the lookup too.
             // A unique-email conflict has the same externally visible result.
@@ -98,7 +142,23 @@ export class AuthService {
         }
     }
 
-    async login(input: LoginInput) {
+    async verifyEmail(token: string): Promise<void> {
+        const tokenHash = this.hashToken(token);
+        const user = await userRepository.createQueryBuilder("user")
+            .addSelect("user.emailVerificationTokenHash")
+            .addSelect("user.emailVerificationExpiresAt")
+            .where("user.emailVerificationTokenHash = :tokenHash", { tokenHash })
+            .andWhere("user.emailVerified = FALSE")
+            .andWhere("user.emailVerificationExpiresAt > NOW()")
+            .getOne();
+        if (!user) throw new AppError(400, "Email verification link is invalid or expired", "EMAIL_VERIFICATION_INVALID");
+        user.emailVerified = true;
+        user.emailVerificationTokenHash = null;
+        user.emailVerificationExpiresAt = null;
+        await userRepository.save(user);
+    }
+
+    async login(input: LoginInput, requestId?: string) {
         const email = input.email.toLowerCase();
 
         const user = await userRepository
@@ -110,12 +170,22 @@ export class AuthService {
         const passwordHash = user?.passwordHash ?? DUMMY_PASSWORD_HASH;
         const passwordMatches = await bcrypt.compare(input.password, passwordHash);
 
-        if (!user || !user.isActive || !passwordMatches) {
+        if (!user || !user.isActive || !user.emailVerified || !passwordMatches) {
             throw new AppError(401, "Invalid email or password");
         }
 
         const familyId = randomUUID();
-        const refreshToken = await this.createRefreshToken(user.id, familyId);
+        const refreshToken = await AppDataSource.transaction(async (manager) => {
+            const newToken = await this.createRefreshToken(user.id, familyId, manager);
+            await auditService.record({
+                actorUserId: user.id,
+                action: "auth.login",
+                resourceType: "session",
+                resourceId: familyId,
+                requestId,
+            }, manager);
+            return newToken;
+        });
         const accessToken = this.createAccessToken(user, familyId);
 
         return {
@@ -143,25 +213,49 @@ export class AuthService {
 
         const refreshed = await AppDataSource.transaction(async (manager) => {
             const repository = manager.getRepository(RefreshTokenEntity);
-            const existing = await repository.findOne({
-                where: { tokenHash },
-                lock: { mode: "pessimistic_write" },
-            });
+            const existing = await repository.createQueryBuilder("token")
+                .addSelect("token.replayTokenCiphertext")
+                .addSelect("token.replayGraceExpiresAt")
+                .where("token.tokenHash = :tokenHash", { tokenHash })
+                .setLock("pessimistic_write")
+                .getOne();
 
             if (!existing) {
                 return null;
             }
 
-            if (
-                existing.revokedAt ||
-                existing.expiresAt.getTime() <= Date.now()
-            ) {
+            if (existing.revokedAt) {
+                const graceMs = config.REFRESH_TOKEN_REPLAY_GRACE_SECONDS * 1000;
+                const replayWindowOpen = graceMs > 0
+                    && existing.replayGraceExpiresAt !== null
+                    && existing.replayGraceExpiresAt.getTime() > Date.now();
+                if (replayWindowOpen && existing.replayTokenCiphertext) {
+                    const replacementTokenFromGrace = this.decryptReplayToken(existing.replayTokenCiphertext);
+                    const replacementHash = this.hashToken(replacementTokenFromGrace);
+                    const replacement = await repository.findOneBy({
+                        tokenHash: replacementHash,
+                        revokedAt: IsNull(),
+                    });
+                    const user = await manager.getRepository(UserEntity).findOneBy({ id: existing.userId });
+                    if (replacement && replacement.expiresAt.getTime() > Date.now() && user?.isActive) {
+                        return {
+                            accessToken: this.createAccessToken(user, existing.familyId),
+                            refreshToken: replacementTokenFromGrace,
+                            tokenType: "Bearer",
+                            expiresIn: ACCESS_TOKEN_SECONDS,
+                            refreshTokenExpiresIn: Math.max(0, Math.floor((replacement.expiresAt.getTime() - Date.now()) / 1000)),
+                        };
+                    }
+                }
+            }
+
+            if (existing.revokedAt || existing.expiresAt.getTime() <= Date.now()) {
                 // Reuse of a rotated/revoked token revokes the remaining
                 // active token in that login session (token family).
                 await repository
                     .createQueryBuilder()
                     .update(RefreshTokenEntity)
-                    .set({ revokedAt: new Date() })
+                    .set({ revokedAt: new Date(), replayTokenCiphertext: null, replayGraceExpiresAt: null })
                     .where('"family_id" = :familyId', { familyId: existing.familyId })
                     .andWhere('"revoked_at" IS NULL')
                     .execute();
@@ -169,6 +263,10 @@ export class AuthService {
             }
 
             existing.revokedAt = new Date();
+            existing.replayTokenCiphertext = this.encryptReplayToken(replacementToken);
+            existing.replayGraceExpiresAt = config.REFRESH_TOKEN_REPLAY_GRACE_SECONDS > 0
+                ? new Date(Date.now() + config.REFRESH_TOKEN_REPLAY_GRACE_SECONDS * 1000)
+                : null;
             await repository.save(existing);
 
             const user = await manager.getRepository(UserEntity).findOneBy({
@@ -203,7 +301,7 @@ export class AuthService {
         return refreshed;
     }
 
-    async logout(token: string) {
+    async logout(token: string, requestId?: string) {
         const tokenHash = this.hashToken(token);
 
         const existing = await refreshTokenRepository.findOneBy({
@@ -211,19 +309,28 @@ export class AuthService {
         });
 
         if (existing) {
-            await refreshTokenRepository
-                .createQueryBuilder()
-                .update(RefreshTokenEntity)
-                .set({ revokedAt: new Date() })
-                .where('"family_id" = :familyId', { familyId: existing.familyId })
-                .andWhere('"revoked_at" IS NULL')
-                .execute();
+            await AppDataSource.transaction(async (manager) => {
+                await manager.getRepository(RefreshTokenEntity)
+                    .createQueryBuilder()
+                    .update(RefreshTokenEntity)
+                    .set({ revokedAt: new Date(), replayTokenCiphertext: null, replayGraceExpiresAt: null })
+                    .where('"family_id" = :familyId', { familyId: existing.familyId })
+                    .andWhere('"revoked_at" IS NULL')
+                    .execute();
+                await auditService.record({
+                    actorUserId: existing.userId,
+                    action: "auth.logout",
+                    resourceType: "session",
+                    resourceId: existing.familyId,
+                    requestId,
+                }, manager);
+            });
         }
 
         return { loggedOut: true };
     }
 
-    async logoutAll(userId: string) {
+    async logoutAll(userId: string, requestId?: string) {
         const revokedSessions = await AppDataSource.transaction(async (manager) => {
             const repository = manager.getRepository(RefreshTokenEntity);
             const active: Array<{ count: string }> = await repository.query(
@@ -234,10 +341,17 @@ export class AuthService {
             );
             await repository.createQueryBuilder()
                 .update(RefreshTokenEntity)
-                .set({ revokedAt: new Date() })
+                .set({ revokedAt: new Date(), replayTokenCiphertext: null, replayGraceExpiresAt: null })
                 .where('"user_id" = :userId', { userId })
                 .andWhere('"revoked_at" IS NULL')
                 .execute();
+            await auditService.record({
+                actorUserId: userId,
+                action: "auth.logout_all",
+                resourceType: "user",
+                resourceId: userId,
+                requestId,
+            }, manager);
             return Number(active[0]?.count ?? 0);
         });
 
@@ -269,7 +383,7 @@ export class AuthService {
         const result = await refreshTokenRepository
             .createQueryBuilder()
             .update(RefreshTokenEntity)
-            .set({ revokedAt: new Date() })
+            .set({ revokedAt: new Date(), replayTokenCiphertext: null, replayGraceExpiresAt: null })
             .where('"family_id" = :sessionId', { sessionId })
             .andWhere('"user_id" = :userId', { userId })
             .andWhere('"revoked_at" IS NULL')
@@ -278,7 +392,7 @@ export class AuthService {
         return (result.affected ?? 0) > 0;
     }
 
-    async changePassword(userId: string, input: ChangePasswordInput) {
+    async changePassword(userId: string, input: ChangePasswordInput, requestId?: string) {
         const user = await userRepository
             .createQueryBuilder("user")
             .addSelect("user.passwordHash")
@@ -301,10 +415,17 @@ export class AuthService {
                 .getRepository(RefreshTokenEntity)
                 .createQueryBuilder()
                 .update(RefreshTokenEntity)
-                .set({ revokedAt: new Date() })
+                .set({ revokedAt: new Date(), replayTokenCiphertext: null, replayGraceExpiresAt: null })
                 .where('"user_id" = :userId', { userId })
                 .andWhere('"revoked_at" IS NULL')
                 .execute();
+            await auditService.record({
+                actorUserId: userId,
+                action: "auth.password_changed",
+                resourceType: "user",
+                resourceId: userId,
+                requestId,
+            }, manager);
         });
 
         return { passwordChanged: true, sessionsRevoked: true };

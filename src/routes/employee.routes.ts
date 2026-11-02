@@ -27,7 +27,7 @@ const requirePermissionForDisablingStatus: RequestHandler = (req, res, next) => 
     return next();
 };
 
-// Har employee route ke liye valid JWT required hai.
+// Require a valid JWT for every employee route.
 router.use(authenticate);
 
 // Employees list

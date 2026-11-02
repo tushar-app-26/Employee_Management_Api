@@ -1,6 +1,7 @@
 import { createClient } from "redis";
 import { RedisStore } from "rate-limit-redis";
 import { config } from "./config.js";
+import { logger } from "../utils/logger.js";
 
 export const rateLimitRedisClient = config.REDIS_URL
     ? createClient({
@@ -17,7 +18,7 @@ export const rateLimitRedisClient = config.REDIS_URL
     : undefined;
 
 rateLimitRedisClient?.on("error", (error) => {
-    console.error("Rate limit Redis connection error", error);
+    logger.error({ err: error }, "Rate limit Redis connection error");
 });
 
 let redisConnection: Promise<void> | undefined;

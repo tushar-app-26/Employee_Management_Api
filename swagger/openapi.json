@@ -77,13 +77,13 @@
     },
     "/api/v1/auth/register": {
       "post": {
-        "summary": "Register employee-role account",
+        "summary": "Register an unverified employee-role account",
         "tags": [
           "Auth"
         ],
         "responses": {
           "202": {
-            "description": "User registered successfully",
+            "description": "Registration accepted; a verification link is sent when the address is new or unverified",
             "content": {
               "application/json": {
                 "schema": {
@@ -167,6 +167,41 @@
               }
             }
           }
+        }
+      }
+    },
+    "/api/v1/auth/verify-email": {
+      "get": {
+        "summary": "Open the email verification confirmation page",
+        "tags": ["Auth"],
+        "security": [],
+        "parameters": [
+          { "name": "token", "in": "query", "required": true, "schema": { "type": "string" } }
+        ],
+        "responses": {
+          "200": { "description": "Confirmation form; verification occurs only after the user submits it" },
+          "400": { "description": "Invalid or expired verification link" }
+        }
+      },
+      "post": {
+        "summary": "Verify ownership of a registered email address",
+        "tags": ["Auth"],
+        "security": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["token"],
+                "properties": { "token": { "type": "string", "minLength": 32, "maxLength": 256 } }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "Email verified successfully" },
+          "400": { "description": "Invalid or expired verification link" }
         }
       }
     },

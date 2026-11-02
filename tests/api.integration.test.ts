@@ -21,6 +21,7 @@ import { errorHandler } from "../src/errors/error-handler.js";
 import { storageDirectory } from "../src/middlewares/document-upload.js";
 import { requestIdMiddleware } from "../src/middlewares/request-id.js";
 import { employeeService } from "../src/services/employee.service.js";
+import { getVerificationTokenForTest } from "../src/services/email-verification.service.js";
 
 const password = "CorrectHorseBatteryStaple123!";
 const api = "/api/v1";
@@ -43,6 +44,7 @@ async function createUser(role: UserRole = "employee"): Promise<UserEntity> {
         passwordHash: await bcrypt.hash(password, 4),
         role,
         isActive: true,
+        emailVerified: true,
     }));
 }
 
@@ -168,6 +170,10 @@ describe("mandatory assignment integration scenarios", () => {
         expect(registration.status).toBe(202);
         expect(registration.body.data).toBeNull();
         const user = await AppDataSource.getRepository(UserEntity).findOneByOrFail({ email });
+        const verification = await request(app).post(`${api}/auth/verify-email`).send({
+            token: getVerificationTokenForTest(email),
+        });
+        expect(verification.status).toBe(200);
         const signedIn = await request(app).post(`${api}/auth/login`).send({ email: user.email, password });
         const responseText = JSON.stringify([registration.body, signedIn.body]);
         expect(responseText).not.toContain(user.passwordHash);

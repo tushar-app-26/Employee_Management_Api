@@ -5,34 +5,38 @@ import { app } from "./app.js";
 import { config } from "./config/config.js";
 import { AppDataSource, checkDatabaseConnection } from "./config/database.js";
 import { closeRateLimitRedis, connectRateLimitRedis } from "./config/rate-limit-store.js";
+import { logger } from "./utils/logger.js";
+import { startRefreshTokenCleanup, stopRefreshTokenCleanup } from "./jobs/refresh-token-cleanup.js";
 
 async function startServer(): Promise<void> {
     try {
         await connectRateLimitRedis();
         await checkDatabaseConnection();
+        startRefreshTokenCleanup();
 
         const server = app.listen(config.PORT, () => {
-            console.log(`Server running on port ${config.PORT}`);
+            logger.info({ port: config.PORT }, "Server listening");
         });
 
         const shutdown = (signal: string): void => {
-            console.log(`${signal} received. Shutting down...`);
+            logger.info({ signal }, "Shutdown requested");
             const forcedExitTimer = setTimeout(() => {
-                console.error("Graceful shutdown timed out; forcing process exit");
+                logger.fatal("Graceful shutdown timed out; forcing process exit");
                 process.exit(1);
             }, config.SHUTDOWN_TIMEOUT_MS);
+            stopRefreshTokenCleanup();
             forcedExitTimer.unref();
 
             server.close((error) => {
                 if (error) {
-                    console.error("HTTP server shutdown failed:", error);
+                    logger.error({ err: error }, "HTTP server shutdown failed");
                     process.exitCode = 1;
                 }
 
                 void Promise.all([AppDataSource.destroy(), closeRateLimitRedis()])
-                    .then(() => console.log("Database and Redis connections closed"))
+                    .then(() => logger.info("Database and Redis connections closed"))
                     .catch((shutdownError: unknown) => {
-                        console.error("Dependency shutdown failed:", shutdownError);
+                        logger.error({ err: shutdownError }, "Dependency shutdown failed");
                         process.exitCode = 1;
                     })
                     .finally(() => clearTimeout(forcedExitTimer));
@@ -42,7 +46,7 @@ async function startServer(): Promise<void> {
         process.once("SIGINT", () => shutdown("SIGINT"));
         process.once("SIGTERM", () => shutdown("SIGTERM"));
     } catch (error) {
-        console.error("Application startup failed:", error);
+        logger.fatal({ err: error }, "Application startup failed");
         process.exitCode = 1;
 
         if (AppDataSource.isInitialized) {

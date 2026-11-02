@@ -10,6 +10,7 @@ import { AppError } from "../errors/app-error.js";
 import type { AuthPayload } from "../middlewares/auth.middleware.js";
 import { acceptedTypes, storageDirectory, createStorageFilename } from "../middlewares/document-upload.js";
 import { auditService } from "./audit.service.js";
+import { logger } from "../utils/logger.js";
 import { documentStorage } from "./document-storage.js";
 import type { PaginationQuery } from "../validators/pagination.validator.js";
 
@@ -67,7 +68,7 @@ export class DocumentService {
         try {
             await documentStorage.put(storageFilename, file.buffer, expectedType);
         } catch (error) {
-            console.error("Document storage upload failed", { storageFilename, error });
+            logger.error({ storageFilename, err: error }, "Document storage upload failed");
             throw new AppError(503, "Document storage is temporarily unavailable", "STORAGE_UNAVAILABLE");
         }
 
@@ -95,7 +96,7 @@ export class DocumentService {
             return this.toResponse(record);
         } catch (error) {
             await documentStorage.delete(storageFilename).catch((cleanupError) => {
-                console.error("Document upload cleanup failed", { storageFilename, error: cleanupError });
+                logger.error({ storageFilename, err: cleanupError }, "Document upload cleanup failed");
             });
             throw error;
         }
@@ -192,7 +193,7 @@ export class DocumentService {
             try {
                 await documentStorage.delete(document.storageFilename);
             } catch (error) {
-                console.error("S3 document cleanup failed after metadata deletion", { documentId: document.id, error });
+                logger.error({ documentId: document.id, err: error }, "S3 document cleanup failed after metadata deletion");
             }
             return true;
         }
@@ -220,14 +221,14 @@ export class DocumentService {
         } catch (error) {
             if (stagedForDelete) {
                 await rename(pendingDeletePath, filePath).catch(() => {
-                    console.error("Document delete rollback could not restore local file", document.id);
+                    logger.error({ documentId: document.id }, "Document delete rollback could not restore local file");
                 });
             }
             throw error;
         }
         if (stagedForDelete) await unlink(pendingDeletePath).catch(() => {
             // The private pending-delete file is an orphan and can be removed during operational cleanup.
-            console.error("Private document cleanup required", document.id);
+            logger.error({ documentId: document.id }, "Private document cleanup required");
         });
         return true;
     }

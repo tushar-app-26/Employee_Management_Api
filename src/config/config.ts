@@ -13,6 +13,8 @@ const configSchema = z.object({
         .min(1)
         .max(65535)
         .default(3000),
+    TRUST_PROXY_HOPS: z.coerce.number().int().min(0).max(10).default(0),
+    LOG_LEVEL: z.enum(["fatal", "error", "warn", "info", "debug", "trace", "silent"]).default("info"),
 
     DATABASE_URL: z
         .string()
@@ -36,6 +38,8 @@ const configSchema = z.object({
         }, "JWT_ACCESS_TTL must be at most one hour")
         .default("15m"),
     REFRESH_TOKEN_TTL_DAYS: z.coerce.number().int().positive().max(365).default(7),
+    REFRESH_TOKEN_REPLAY_GRACE_SECONDS: z.coerce.number().int().min(0).max(120).default(30),
+    REFRESH_TOKEN_RETENTION_DAYS: z.coerce.number().int().min(7).max(365).default(30),
 
     CORS_ORIGINS: z
         .string()
@@ -78,6 +82,13 @@ const configSchema = z.object({
     DEV_HR_PASSWORD: z.string().optional(),
     DEV_HR_FIRST_NAME: z.string().optional(),
     DEV_HR_LAST_NAME: z.string().optional(),
+    SMTP_HOST: z.string().default(""),
+    SMTP_PORT: z.coerce.number().int().min(1).max(65535).default(587),
+    SMTP_SECURE: z.enum(["true", "false"]).default("false").transform((value) => value === "true"),
+    SMTP_USER: z.string().default(""),
+    SMTP_PASSWORD: z.string().default(""),
+    EMAIL_FROM: z.string().email().default("no-reply@example.local"),
+    PUBLIC_API_URL: z.string().url().default("http://localhost:3000"),
 });
 
 const result = configSchema.safeParse(process.env);
@@ -106,6 +117,30 @@ if (result.data.DOCUMENT_STORAGE_DRIVER === "s3") {
 
 if (result.data.NODE_ENV === "production" && !result.data.REDIS_URL) {
     console.error("Invalid environment configuration:", ["REDIS_URL is required in production"]);
+    process.exit(1);
+}
+
+if (result.data.NODE_ENV === "production" && !result.data.SMTP_HOST) {
+    console.error("Invalid environment configuration:", ["SMTP_HOST is required in production for email verification"]);
+    process.exit(1);
+}
+
+if (
+    result.data.NODE_ENV === "production" &&
+    (new URL(result.data.PUBLIC_API_URL).protocol !== "https:" ||
+        ["localhost", "127.0.0.1", "::1"].includes(new URL(result.data.PUBLIC_API_URL).hostname))
+) {
+    console.error("Invalid environment configuration:", ["PUBLIC_API_URL must point to the deployed HTTPS API"]);
+    process.exit(1);
+}
+
+if (result.data.NODE_ENV === "production" && result.data.EMAIL_FROM.endsWith(".local")) {
+    console.error("Invalid environment configuration:", ["EMAIL_FROM must use a domain accepted by the production mail provider"]);
+    process.exit(1);
+}
+
+if (Boolean(result.data.SMTP_USER) !== Boolean(result.data.SMTP_PASSWORD)) {
+    console.error("Invalid environment configuration:", ["SMTP_USER and SMTP_PASSWORD must be set together"]);
     process.exit(1);
 }
 

@@ -58,7 +58,7 @@ export class UserService {
                 // the next login receives tokens reflecting the new role.
                 await manager.getRepository(RefreshTokenEntity).createQueryBuilder()
                     .update(RefreshTokenEntity)
-                    .set({ revokedAt: new Date() })
+                    .set({ revokedAt: new Date(), replayTokenCiphertext: null, replayGraceExpiresAt: null })
                     .where('"user_id" = :userId', { userId: targetUserId })
                     .andWhere('"revoked_at" IS NULL')
                     .execute();
@@ -88,7 +88,7 @@ export class UserService {
             );
             await manager.getRepository(RefreshTokenEntity).createQueryBuilder()
                 .update(RefreshTokenEntity)
-                .set({ revokedAt: new Date() })
+                .set({ revokedAt: new Date(), replayTokenCiphertext: null, replayGraceExpiresAt: null })
                 .where('"user_id" = :userId', { userId: targetUserId })
                 .andWhere('"revoked_at" IS NULL')
                 .execute();

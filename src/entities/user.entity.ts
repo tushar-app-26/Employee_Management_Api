@@ -46,6 +46,15 @@ export class UserEntity {
     @Column({ name: "is_active", type: "boolean", default: true })
     isActive!: boolean;
 
+    @Column({ name: "email_verified", type: "boolean", default: false })
+    emailVerified!: boolean;
+
+    @Column({ name: "email_verification_token_hash", type: "varchar", length: 64, nullable: true, select: false })
+    emailVerificationTokenHash!: string | null;
+
+    @Column({ name: "email_verification_expires_at", type: "timestamptz", nullable: true, select: false })
+    emailVerificationExpiresAt!: Date | null;
+
     @CreateDateColumn({
         name: "created_at",
         type: "timestamptz",

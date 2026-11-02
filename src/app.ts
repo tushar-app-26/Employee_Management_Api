@@ -20,16 +20,17 @@ import authRoutes from "./routes/auth.routes.js";
 import userRoutes from "./routes/user.routes.js";
 import documentRoutes from "./routes/document.routes.js";
 const app = express();
+app.set("trust proxy", config.TRUST_PROXY_HOPS);
 const authRateLimitStore = createRateLimitStore("employee-api:auth:");
 const apiRateLimitStore = createRateLimitStore("employee-api:api:");
 
-// Har request ko unique ID do.
+// Attach a unique ID to each request.
 app.use(requestIdMiddleware);
 
 // HTTP security headers.
 app.use(helmet());
 
-// Trusted browser origins ko allow karo.
+// Allow configured browser origins.
 const corsOptions: CorsOptions = {
     origin: (origin, callback) => {
         if (!origin || corsOrigins.includes(origin)) {
@@ -56,7 +57,7 @@ app.use(
     }),
 );
 
-// API requests par rate limiting.
+// Apply the general API rate limit.
 app.use(
     "/api/v1",
     rateLimit({
@@ -75,14 +76,16 @@ app.use(
     })
 );
 
-// JSON request body ki maximum size 10 KB.
+// Limit JSON request bodies to 10 KB.
 app.use(express.json({ limit: "10kb" }));
+app.use(express.urlencoded({ extended: false, limit: "10kb" }));
 
-// Swagger UI uses the OpenAPI specification kept in the project root.
-const swaggerDocument = JSON.parse(
-    readFileSync(resolve(process.cwd(), "swagger/openapi.json"), "utf8"),
-);
-app.use("/docs", swaggerUi.serve, swaggerUi.setup(swaggerDocument));
+if (config.NODE_ENV !== "production") {
+    const swaggerDocument = JSON.parse(
+        readFileSync(resolve(process.cwd(), "swagger/openapi.json"), "utf8"),
+    );
+    app.use("/docs", swaggerUi.serve, swaggerUi.setup(swaggerDocument));
+}
 
 app.use("/api/v1/employees", employeeRoutes);
 app.use("/api/v1/departments", departmentRoutes);
@@ -105,7 +108,7 @@ app.get("/health", (_req, res) => {
     return ApiResponse.send(res, 200, "Service is alive", { status: "alive" });
 });
 
-// Readiness confirms the API can reach PostgreSQL before receiving traffic.
+// Readiness confirms the API can reach its required dependencies before receiving traffic.
 app.get("/health/ready", async (_req, res, next) => {
     try {
         await checkDatabaseReadiness();
@@ -120,7 +123,7 @@ app.get("/health/ready", async (_req, res, next) => {
     }
 });
 
-// Unknown routes ke liye 404 response.
+// Return a consistent 404 response for unknown routes.
 app.use((_req, res) => {
     return ApiResponse.send(
         res,
@@ -129,7 +132,7 @@ app.use((_req, res) => {
     );
 });
 
-// Error handler hamesha routes aur 404 handler ke baad.
+// Keep the error handler after all routes and the 404 handler.
 app.use(errorHandler);
 
 export { app };

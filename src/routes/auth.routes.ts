@@ -10,6 +10,7 @@ import {
     logoutSchema,
     sessionIdSchema,
     changePasswordSchema,
+    verifyEmailSchema,
 } from "../validators/auth.validator.js";
 
 const router = Router();
@@ -19,6 +20,13 @@ router.post(
     validateRequest(registerSchema),
     authController.register.bind(authController),
 );
+
+router.post(
+    "/verify-email",
+    validateRequest(verifyEmailSchema),
+    authController.verifyEmail.bind(authController),
+);
+router.get("/verify-email", authController.verifyEmailLink.bind(authController));
 
 router.post(
     "/login",
