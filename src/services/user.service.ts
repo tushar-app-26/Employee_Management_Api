@@ -4,39 +4,12 @@ import { RefreshTokenEntity } from "../entities/refresh-token.entity.js";
 import { AppDataSource } from "../config/database.js";
 import { AppError } from "../errors/app-error.js";
 import { auditService } from "./audit.service.js";
-import { userRepository } from "../repositories/user.repository.js";
+import { listUnlinkedEmployeeUsers, userRepository } from "../repositories/user.repository.js";
+import type { PaginationQuery } from "../validators/pagination.validator.js";
 
 export class UserService {
-    async getUnlinkedEmployeeUsers() {
-        const users = await userRepository
-            .createQueryBuilder("user")
-            .leftJoin(
-                EmployeeEntity,
-                "employeeProfile",
-                "employeeProfile.user_id = user.id",
-            )
-            .where("user.role = :role", { role: "employee" })
-            .andWhere("user.isActive = TRUE")
-            .andWhere("employeeProfile.id IS NULL")
-            .select([
-                "user.id",
-                "user.firstName",
-                "user.lastName",
-                "user.email",
-                "user.role",
-                "user.createdAt",
-            ])
-            .orderBy("user.createdAt", "ASC")
-            .getMany();
-
-        return users.map((user) => ({
-            id: user.id,
-            firstName: user.firstName,
-            lastName: user.lastName,
-            email: user.email,
-            role: user.role,
-            createdAt: user.createdAt,
-        }));
+    async getUnlinkedEmployeeUsers(pagination: PaginationQuery) {
+        return listUnlinkedEmployeeUsers(pagination.page, pagination.limit);
     }
 
     async updateAccess(
@@ -85,7 +58,7 @@ export class UserService {
                 // the next login receives tokens reflecting the new role.
                 await manager.getRepository(RefreshTokenEntity).createQueryBuilder()
                     .update(RefreshTokenEntity)
-                    .set({ revokedAt: new Date() })
+                    .set({ revokedAt: new Date(), replayTokenCiphertext: null, replayGraceExpiresAt: null })
                     .where('"user_id" = :userId', { userId: targetUserId })
                     .andWhere('"revoked_at" IS NULL')
                     .execute();
@@ -115,7 +88,7 @@ export class UserService {
             );
             await manager.getRepository(RefreshTokenEntity).createQueryBuilder()
                 .update(RefreshTokenEntity)
-                .set({ revokedAt: new Date() })
+                .set({ revokedAt: new Date(), replayTokenCiphertext: null, replayGraceExpiresAt: null })
                 .where('"user_id" = :userId', { userId: targetUserId })
                 .andWhere('"revoked_at" IS NULL')
                 .execute();

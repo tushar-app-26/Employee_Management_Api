@@ -1,6 +1,7 @@
 import type { Request, Response, NextFunction } from "express";
 import { userService } from "../services/user.service.js";
 import { ApiResponse } from "../utils/api-response.js";
+import type { PaginationQuery } from "../validators/pagination.validator.js";
 
 export class UserController {
     async getUnlinkedEmployeeUsers(
@@ -9,7 +10,9 @@ export class UserController {
         next: NextFunction,
     ): Promise<void> {
         try {
-            const users = await userService.getUnlinkedEmployeeUsers();
+            const users = await userService.getUnlinkedEmployeeUsers(
+                res.locals.validatedQuery as PaginationQuery,
+            );
             ApiResponse.send(res, 200, "Unlinked employee accounts fetched successfully", users);
         } catch (error) {
             next(error);

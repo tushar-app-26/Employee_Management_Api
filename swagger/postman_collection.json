@@ -2,7 +2,7 @@
   "info": {
     "_postman_id": "8b6d48d1-9e47-4e91-a672-d2a445e72a92",
     "name": "Employee Management API",
-    "description": "Manual Postman collection for the implemented API, including private local employee-document uploads. Use development data only. Employee self-service and admin access-management requests require the matching account token. For directory, department writes, and admin operations, run npm run seed:dev-admin locally and paste its login access token into the adminAccessToken variable. Keep admin credentials out of this collection. The employeeId collection variable is automatically captured from Create employee or Get my profile; it is the employee profile ID, distinct from employeeUserId.",
+    "description": "Postman collection for the implemented API, including private S3 employee-document upload, listing, presigned download, and deletion. Use development data only. Set a private test bucket in the API environment. Run npm run seed:dev-admin locally and place its token in adminAccessToken for HR/admin operations. The employeeId variable is the employee profile ID, distinct from employeeUserId.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "auth": {
@@ -90,6 +90,10 @@
     },
     {
       "key": "downloadToken",
+      "value": ""
+    },
+    {
+      "key": "otherEmployeeId",
       "value": ""
     }
   ],
@@ -397,7 +401,7 @@
               }
             ],
             "url": {
-              "raw": "{{baseUrl}}/api/v1/auth/sessions",
+              "raw": "{{baseUrl}}/api/v1/auth/sessions?page=1&limit=20",
               "host": [
                 "{{baseUrl}}"
               ],
@@ -406,6 +410,16 @@
                 "v1",
                 "auth",
                 "sessions"
+              ],
+              "query": [
+                {
+                  "key": "page",
+                  "value": "1"
+                },
+                {
+                  "key": "limit",
+                  "value": "20"
+                }
               ]
             },
             "description": "Requires the logged-in user access token."
@@ -417,8 +431,8 @@
                 "type": "text/javascript",
                 "exec": [
                   "pm.test('HTTP status is 200', function () { pm.response.to.have.status(200); });",
-                  "const j=pm.response.json(); pm.test('Session list is safe and structured', function () { pm.expect(j.data).to.be.an('array'); j.data.forEach(s => { pm.expect(s).to.include.all.keys('id','createdAt','expiresAt'); pm.expect(s).not.to.have.property('tokenHash'); }); });",
-                  "const sessions=pm.response.json().data; if (sessions.length) pm.collectionVariables.set('sessionId', sessions[0].id);"
+                  "const j=pm.response.json(); pm.test('Session list is safe and structured', function () { pm.expect(j.data.items).to.be.an('array'); pm.expect(j.data.pagination).to.have.property('total'); j.data.items.forEach(s => { pm.expect(s).to.include.all.keys('id','createdAt','expiresAt'); pm.expect(s).not.to.have.property('tokenHash'); }); });",
+                  "const sessions=pm.response.json().data.items; if (sessions.length) pm.collectionVariables.set('sessionId', sessions[0].id);"
                 ]
               }
             }
@@ -873,7 +887,7 @@
             "method": "GET",
             "header": [],
             "url": {
-              "raw": "{{baseUrl}}/api/v1/users/unlinked-employees",
+              "raw": "{{baseUrl}}/api/v1/users/unlinked-employees?page=1&limit=20",
               "host": [
                 "{{baseUrl}}"
               ],
@@ -882,6 +896,16 @@
                 "v1",
                 "users",
                 "unlinked-employees"
+              ],
+              "query": [
+                {
+                  "key": "page",
+                  "value": "1"
+                },
+                {
+                  "key": "limit",
+                  "value": "20"
+                }
               ]
             },
             "description": "Requires HR/admin access token. Automatically stores the account ID matching testEmail for the Create employee request."
@@ -893,8 +917,8 @@
                 "type": "text/javascript",
                 "exec": [
                   "pm.test('HTTP status is 200', function () { pm.response.to.have.status(200); });",
-                  "const j=pm.response.json(); pm.test('data is an array and contains no password fields', function () { pm.expect(j.data).to.be.an('array'); j.data.forEach(u => { pm.expect(u).not.to.have.property('password'); pm.expect(u).not.to.have.property('passwordHash'); }); });",
-                  "const match=j.data.find(u => u.email === pm.collectionVariables.get('testEmail')); pm.test('Registered test account is available to HR', function () { pm.expect(match, 'register the test account first and use an HR token').to.exist; }); if (match) pm.collectionVariables.set('employeeUserId', match.id);"
+                  "const j=pm.response.json(); pm.test('data is an array and contains no password fields', function () { pm.expect(j.data.items).to.be.an('array'); pm.expect(j.data.pagination).to.have.property('total'); j.data.items.forEach(u => { pm.expect(u).not.to.have.property('password'); pm.expect(u).not.to.have.property('passwordHash'); }); });",
+                  "const match=j.data.items.find(u => u.email === pm.collectionVariables.get('testEmail')); pm.test('Registered test account is available to HR', function () { pm.expect(match, 'register the test account first and use an HR token').to.exist; }); if (match) pm.collectionVariables.set('employeeUserId', match.id);"
                 ]
               }
             }
@@ -1375,6 +1399,8 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
+                  "pm.test('HTTP status is 200', function () { pm.response.to.have.status(200); });",
+                  "pm.test('Profile response contains the caller profile', function () { const j=pm.response.json(); pm.expect(j.success).to.eql(true); pm.expect(j.data).to.include.all.keys('id','firstName','lastName','workEmail','departmentId'); pm.collectionVariables.set('employeeId', j.data.id); });",
                   "const j=pm.response.json(); if (j.success && j.data?.id) pm.collectionVariables.set('employeeId', j.data.id);"
                 ]
               }
@@ -1413,7 +1439,20 @@
               }
             }
           },
-          "response": []
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP status is 200', function () { pm.response.to.have.status(200); });",
+                  "pm.test('Profile update returns an employee object', function () { const j=pm.response.json(); pm.expect(j.success).to.eql(true); pm.expect(j.data).to.be.an('object'); });",
+                  ""
+                ]
+              }
+            }
+          ]
         },
         {
           "name": "Export my account and employee data",
@@ -1434,7 +1473,20 @@
               ]
             }
           },
-          "response": []
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP status is 200', function () { pm.response.to.have.status(200); });",
+                  "pm.test('Export contains account and employee data', function () { const j=pm.response.json(); pm.expect(j.success).to.eql(true); pm.expect(j.data.account).to.be.an('object'); pm.expect(j.data).to.have.property('exportedAt'); });",
+                  ""
+                ]
+              }
+            }
+          ]
         }
       ],
       "auth": {
@@ -1484,7 +1536,20 @@
               }
             }
           },
-          "response": []
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP status is 200', function () { pm.response.to.have.status(200); });",
+                  "pm.test('Role update response is safe', function () { const j=pm.response.json(); pm.expect(j.success).to.eql(true); pm.expect(j.data).to.have.property('role'); pm.expect(j.data).not.to.have.property('passwordHash'); });",
+                  ""
+                ]
+              }
+            }
+          ]
         },
         {
           "name": "Deactivate account and revoke refresh sessions",
@@ -1519,7 +1584,20 @@
               }
             }
           },
-          "response": []
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP status is 200', function () { pm.response.to.have.status(200); });",
+                  "pm.test('Account is reported inactive', function () { const j=pm.response.json(); pm.expect(j.success).to.eql(true); pm.expect(j.data.isActive).to.eql(false); });",
+                  ""
+                ]
+              }
+            }
+          ]
         },
         {
           "name": "Revoke all sessions for account",
@@ -1540,7 +1618,20 @@
               ]
             }
           },
-          "response": []
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP status is 200', function () { pm.response.to.have.status(200); });",
+                  "pm.test('Revocation count is returned', function () { const j=pm.response.json(); pm.expect(j.success).to.eql(true); pm.expect(j.data.revokedSessions).to.be.a('number'); });",
+                  ""
+                ]
+              }
+            }
+          ]
         }
       ],
       "auth": {
@@ -1555,7 +1646,7 @@
       }
     },
     {
-      "name": "Employee Documents - local private storage",
+      "name": "Employee Documents - S3 private object storage",
       "item": [
         {
           "name": "Upload employee document",
@@ -1596,7 +1687,20 @@
                 }
               }
             ]
-          }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP status is 201', function () { pm.response.to.have.status(201); });",
+                  "pm.test('Document metadata is returned without storage internals', function () { const j=pm.response.json(); pm.expect(j.success).to.eql(true); pm.expect(j.data).to.include.all.keys('id','employeeId','originalFilename','mimeType','sizeBytes','createdAt'); pm.expect(j.data).not.to.have.property('storageFilename'); pm.collectionVariables.set('documentId', j.data.id); });",
+                  ""
+                ]
+              }
+            }
+          ]
         },
         {
           "name": "List employee documents",
@@ -1604,7 +1708,7 @@
             "method": "GET",
             "header": [],
             "url": {
-              "raw": "{{baseUrl}}/api/v1/employees/{{employeeId}}/documents",
+              "raw": "{{baseUrl}}/api/v1/employees/{{employeeId}}/documents?page=1&limit=20",
               "host": [
                 "{{baseUrl}}"
               ],
@@ -1612,11 +1716,34 @@
                 "api",
                 "v1",
                 "employees",
-                "%7B%7BemployeeId%7D%7D",
+                "{{employeeId}}",
                 "documents"
+              ],
+              "query": [
+                {
+                  "key": "page",
+                  "value": "1"
+                },
+                {
+                  "key": "limit",
+                  "value": "20"
+                }
               ]
             }
-          }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP status is 200', function () { pm.response.to.have.status(200); });",
+                  "pm.test('Document list includes pagination metadata', function () { const j=pm.response.json(); pm.expect(j.success).to.eql(true); pm.expect(j.data.items).to.be.an('array'); pm.expect(j.data.pagination).to.include.all.keys('page','limit','total','totalPages'); });",
+                  ""
+                ]
+              }
+            }
+          ]
         },
         {
           "name": "Create short-lived download URL",
@@ -1632,7 +1759,7 @@
                 "api",
                 "v1",
                 "documents",
-                "%7B%7BdocumentId%7D%7D",
+                "{{documentId}}",
                 "download-url"
               ]
             },
@@ -1647,7 +1774,21 @@
                 }
               }
             ]
-          }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP status is 200', function () { pm.response.to.have.status(200); });",
+                  "const j=pm.response.json(); pm.test('Download link is short-lived', function () { pm.expect(j.success).to.eql(true); pm.expect(j.data.downloadUrl).to.be.a('string'); pm.expect(j.data.expiresInSeconds).to.be.a('number'); });",
+                  "",
+                  "if (j.success && j.data?.downloadUrl) { const url=j.data.downloadUrl; pm.collectionVariables.set('downloadUrl', /^https?:\\/\\//i.test(url) ? url : pm.collectionVariables.get('baseUrl') + url); }"
+                ]
+              }
+            }
+          ]
         },
         {
           "name": "Download using short-lived URL",
@@ -1655,28 +1796,25 @@
             "method": "GET",
             "header": [],
             "url": {
-              "raw": "{{baseUrl}}/api/v1/documents/{{documentId}}/download?token={{downloadToken}}",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "documents",
-                "{{documentId}}",
-                "download"
-              ],
-              "query": [
-                {
-                  "key": "token",
-                  "value": "{{downloadToken}}"
-                }
-              ]
+              "raw": "{{downloadUrl}}"
             },
             "auth": {
               "type": "noauth"
             }
-          }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Download returns the stored file', function () { pm.response.to.have.status(200); });",
+                  "pm.test('Download has a file content type', function () { pm.expect(pm.response.headers.get('Content-Type')).to.match(/application\\/pdf|image\\/(png|jpeg)/i); });",
+                  ""
+                ]
+              }
+            }
+          ]
         },
         {
           "name": "Delete document (admin/HR)",
@@ -1694,8 +1832,169 @@
                 "documents",
                 "%7B%7BdocumentId%7D%7D"
               ]
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{adminAccessToken}}",
+                  "type": "string"
+                }
+              ]
             }
-          }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP status is 200', function () { pm.response.to.have.status(200); });",
+                  "pm.test('Delete response confirms success', function () { const j=pm.response.json(); pm.expect(j.success).to.eql(true); pm.expect(j.message).to.include('deleted'); });",
+                  ""
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Security attack checks",
+      "item": [
+        {
+          "name": "Attack: SQL injection in employee search",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{adminAccessToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/employees?search=%25%27%20OR%201%3D1%20--&page=1&limit=10",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "employees"
+              ],
+              "query": [
+                {
+                  "key": "search",
+                  "value": "%' OR 1=1 --"
+                },
+                {
+                  "key": "page",
+                  "value": "1"
+                },
+                {
+                  "key": "limit",
+                  "value": "10"
+                }
+              ]
+            },
+            "description": "Sends SQL injection text as a search value. Set adminAccessToken first; the bound parameter must remain ordinary search text."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('SQL injection payload is handled as an ordinary query', function () { pm.response.to.have.status(200); const j=pm.response.json(); pm.expect(j.data.items).to.be.an('array'); pm.expect(j.data.pagination.total).to.be.a('number'); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Attack: employee attempts to list all employees",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{accessToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/employees",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "employees"
+              ]
+            },
+            "description": "Uses an employee-role access token against the all-employees endpoint; access must be denied."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Employee cannot enumerate all employee records', function () { pm.response.to.have.status(403); const j=pm.response.json(); pm.expect(j.code).to.eql('FORBIDDEN'); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Attack: unsigned JWT with alg none",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer eyJhbGciOiJub25lIn0.eyJzdWIiOiJhY3RvciIsInNpZCI6ImZhbWlseSIsInJvbGUiOiJhZG1pbiIsImlzcyI6ImVtcGxveWVlLW1hbmFnZW1lbnQtYXBpIiwiYXVkIjoiZW1wbG95ZWUtbWFuYWdlbWVudC1jbGllbnQifQ."
+              }
+            ],
+            "auth": {
+              "type": "noauth"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/employees/me",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "employees",
+                "me"
+              ]
+            },
+            "description": "Attempts an unsigned JWT with alg none; the API must reject the token."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Unsigned JWT is rejected', function () { pm.response.to.have.status(401); const j=pm.response.json(); pm.expect(j.code).to.eql('UNAUTHENTICATED'); });"
+                ]
+              }
+            }
+          ]
         }
       ]
     }

@@ -1,7 +1,7 @@
 import type { Request, Response, NextFunction } from "express";
 import type { AuthPayload } from "./auth.middleware.js";
 import { ApiResponse } from "../utils/api-response.js";
-import { AppDataSource } from "../config/database.js";
+import { roleHasAnyPermission } from "../repositories/authorization.repository.js";
 
 type UserRole = AuthPayload["role"];
 
@@ -35,14 +35,8 @@ export function requirePermission(...permissions: string[]) {
         }
 
         try {
-            const rows: Array<{ permission_id: string }> = await AppDataSource.query(
-                `SELECT permission_id
-                 FROM role_permissions
-                 WHERE role_id = $1 AND permission_id = ANY($2::varchar[])`,
-                [req.auth.role, permissions],
-            );
-
-            if (rows.length === 0) {
+            const authorized = await roleHasAnyPermission(req.auth.role, permissions);
+            if (!authorized) {
                 return ApiResponse.send(
                     res,
                     403,

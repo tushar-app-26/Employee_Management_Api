@@ -2,6 +2,7 @@ import { Router } from "express";
 import { authController } from "../controllers/auth.controller.js";
 import { authenticate } from "../middlewares/auth.middleware.js";
 import { validateRequest } from "../middlewares/validate-request.js";
+import { paginationQuerySchema } from "../validators/pagination.validator.js";
 import {
     registerSchema,
     loginSchema,
@@ -9,6 +10,7 @@ import {
     logoutSchema,
     sessionIdSchema,
     changePasswordSchema,
+    verifyEmailSchema,
 } from "../validators/auth.validator.js";
 
 const router = Router();
@@ -18,6 +20,13 @@ router.post(
     validateRequest(registerSchema),
     authController.register.bind(authController),
 );
+
+router.post(
+    "/verify-email",
+    validateRequest(verifyEmailSchema),
+    authController.verifyEmail.bind(authController),
+);
+router.get("/verify-email", authController.verifyEmailLink.bind(authController));
 
 router.post(
     "/login",
@@ -46,6 +55,7 @@ router.post(
 router.get(
     "/sessions",
     authenticate,
+    validateRequest(paginationQuerySchema, "query"),
     authController.sessions.bind(authController),
 );
 

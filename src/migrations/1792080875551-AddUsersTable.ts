@@ -37,8 +37,7 @@ export class AddUsersTable1792080875551
     }
 
     public async down(queryRunner: QueryRunner): Promise<void> {
-        // Existing user data ko protect karne ke liye
-        // rollback par users table drop nahi karenge.
+        // Keep the users table during rollback to protect existing user data.
         console.log(
             "Users table rollback skipped to protect existing data."
         );

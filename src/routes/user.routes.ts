@@ -4,6 +4,7 @@ import { authenticate } from "../middlewares/auth.middleware.js";
 import { requirePermission } from "../middlewares/authorize.js";
 import { validateRequest } from "../middlewares/validate-request.js";
 import { updateUserAccessSchema, userIdSchema } from "../validators/user.validator.js";
+import { paginationQuerySchema } from "../validators/pagination.validator.js";
 
 const router = Router();
 
@@ -11,6 +12,7 @@ router.use(authenticate);
 router.get(
     "/unlinked-employees",
     requirePermission("user:read-unlinked"),
+    validateRequest(paginationQuerySchema, "query"),
     (req, res, next) => userController.getUnlinkedEmployeeUsers(req, res, next),
 );
 

@@ -13,10 +13,18 @@ const configSchema = z.object({
         .min(1)
         .max(65535)
         .default(3000),
+    TRUST_PROXY_HOPS: z.coerce.number().int().min(0).max(10).default(0),
+    LOG_LEVEL: z.enum(["fatal", "error", "warn", "info", "debug", "trace", "silent"]).default("info"),
 
     DATABASE_URL: z
         .string()
         .min(1, "DATABASE_URL is required"),
+
+    DB_POOL_MAX: z.coerce.number().int().min(1).max(100).default(10),
+    DB_CONNECT_TIMEOUT_MS: z.coerce.number().int().min(100).max(30000).default(5000),
+    DB_QUERY_TIMEOUT_MS: z.coerce.number().int().min(100).max(60000).default(5000),
+    DB_RETRY_ATTEMPTS: z.coerce.number().int().min(1).max(5).default(3),
+    DB_RETRY_BASE_DELAY_MS: z.coerce.number().int().min(10).max(5000).default(200),
 
     JWT_SECRET: z
         .string()
@@ -30,6 +38,8 @@ const configSchema = z.object({
         }, "JWT_ACCESS_TTL must be at most one hour")
         .default("15m"),
     REFRESH_TOKEN_TTL_DAYS: z.coerce.number().int().positive().max(365).default(7),
+    REFRESH_TOKEN_REPLAY_GRACE_SECONDS: z.coerce.number().int().min(0).max(120).default(30),
+    REFRESH_TOKEN_RETENTION_DAYS: z.coerce.number().int().min(7).max(365).default(30),
 
     CORS_ORIGINS: z
         .string()
@@ -52,6 +62,33 @@ const configSchema = z.object({
     INACTIVE_EMPLOYEE_REVIEW_DAYS: z.coerce.number().int().positive().default(2555),
     DOCUMENT_STORAGE_DIR: z.string().min(1).default("var/private-documents"),
     DOCUMENT_MAX_SIZE_MB: z.coerce.number().int().positive().max(25).default(5),
+    DOCUMENT_STORAGE_DRIVER: z.enum(["local", "s3"]).default("s3"),
+    AWS_REGION: z.string().min(1).default(""),
+    AWS_S3_BUCKET: z.string().min(1).default(""),
+    AWS_ACCESS_KEY_ID: z.string().optional(),
+    AWS_SECRET_ACCESS_KEY: z.string().optional(),
+    S3_PRESIGNED_URL_TTL_SECONDS: z.coerce.number().int().min(30).max(3600).default(300),
+    S3_REQUEST_TIMEOUT_MS: z.coerce.number().int().min(100).max(30000).default(5000),
+    REDIS_URL: z.string().default(""),
+    REDIS_CONNECT_TIMEOUT_MS: z.coerce.number().int().min(100).max(30000).default(5000),
+    REDIS_RETRY_ATTEMPTS: z.coerce.number().int().min(1).max(10).default(5),
+    REDIS_RETRY_BASE_DELAY_MS: z.coerce.number().int().min(10).max(5000).default(200),
+    SHUTDOWN_TIMEOUT_MS: z.coerce.number().int().min(1000).max(60000).default(10000),
+    DEV_ADMIN_EMAIL: z.string().optional(),
+    DEV_ADMIN_PASSWORD: z.string().optional(),
+    DEV_ADMIN_FIRST_NAME: z.string().optional(),
+    DEV_ADMIN_LAST_NAME: z.string().optional(),
+    DEV_HR_EMAIL: z.string().optional(),
+    DEV_HR_PASSWORD: z.string().optional(),
+    DEV_HR_FIRST_NAME: z.string().optional(),
+    DEV_HR_LAST_NAME: z.string().optional(),
+    SMTP_HOST: z.string().default(""),
+    SMTP_PORT: z.coerce.number().int().min(1).max(65535).default(587),
+    SMTP_SECURE: z.enum(["true", "false"]).default("false").transform((value) => value === "true"),
+    SMTP_USER: z.string().default(""),
+    SMTP_PASSWORD: z.string().default(""),
+    EMAIL_FROM: z.string().email().default("no-reply@example.local"),
+    PUBLIC_API_URL: z.string().url().default("http://localhost:3000"),
 });
 
 const result = configSchema.safeParse(process.env);
@@ -62,6 +99,48 @@ if (!result.success) {
         result.error.flatten().fieldErrors,
     );
 
+    process.exit(1);
+}
+
+if (result.data.DOCUMENT_STORAGE_DRIVER === "s3") {
+    const missing: string[] = [];
+    if (!result.data.AWS_REGION) missing.push("AWS_REGION");
+    if (!result.data.AWS_S3_BUCKET) missing.push("AWS_S3_BUCKET");
+    if (Boolean(result.data.AWS_ACCESS_KEY_ID) !== Boolean(result.data.AWS_SECRET_ACCESS_KEY)) {
+        missing.push("AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY must be set together");
+    }
+    if (missing.length) {
+        console.error("Invalid environment configuration:", missing);
+        process.exit(1);
+    }
+}
+
+if (result.data.NODE_ENV === "production" && !result.data.REDIS_URL) {
+    console.error("Invalid environment configuration:", ["REDIS_URL is required in production"]);
+    process.exit(1);
+}
+
+if (result.data.NODE_ENV === "production" && !result.data.SMTP_HOST) {
+    console.error("Invalid environment configuration:", ["SMTP_HOST is required in production for email verification"]);
+    process.exit(1);
+}
+
+if (
+    result.data.NODE_ENV === "production" &&
+    (new URL(result.data.PUBLIC_API_URL).protocol !== "https:" ||
+        ["localhost", "127.0.0.1", "::1"].includes(new URL(result.data.PUBLIC_API_URL).hostname))
+) {
+    console.error("Invalid environment configuration:", ["PUBLIC_API_URL must point to the deployed HTTPS API"]);
+    process.exit(1);
+}
+
+if (result.data.NODE_ENV === "production" && result.data.EMAIL_FROM.endsWith(".local")) {
+    console.error("Invalid environment configuration:", ["EMAIL_FROM must use a domain accepted by the production mail provider"]);
+    process.exit(1);
+}
+
+if (Boolean(result.data.SMTP_USER) !== Boolean(result.data.SMTP_PASSWORD)) {
+    console.error("Invalid environment configuration:", ["SMTP_USER and SMTP_PASSWORD must be set together"]);
     process.exit(1);
 }
 
